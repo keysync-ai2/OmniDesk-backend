@@ -16,7 +16,7 @@ export AWS_CONFIG_FILE=/Users/dhruvsharma/Documents/Research/OmniDesk/.aws/confi
 | AWS Account | `577397739686` |
 | Region | `us-east-1` |
 | Lambda Role | `arn:aws:iam::577397739686:role/omnidesk-lambda-role` |
-| Lambda Layer | `arn:aws:lambda:us-east-1:577397739686:layer:omnidesk-shared-layer:2` |
+| Lambda Layer | `arn:aws:lambda:us-east-1:577397739686:layer:omnidesk-shared-layer:3` |
 | API Gateway ID | `zak2w9nuuh` |
 | API Gateway URL | `https://zak2w9nuuh.execute-api.us-east-1.amazonaws.com/dev` |
 | S3 Bucket | `omnidesk-files-577397739686` |
@@ -34,7 +34,7 @@ export AWS_CONFIG_FILE=/Users/dhruvsharma/Documents/Research/OmniDesk/.aws/confi
 | `/api/products` | `dmil9x` | GET, POST | `omnidesk-product-list`, `omnidesk-product-create` |
 | `/api/products/{id}` | `t8xk6z` | GET, PUT | `omnidesk-product-list`, `omnidesk-product-update` |
 | `/api/products/{id}/deactivate` | `9fj13j` | PATCH | `omnidesk-product-update` |
-| `/api/products/search` | `ai071f` | GET | `omnidesk-product-list` |
+| `/api/products/search` | `ai071f` | GET | `omnidesk-product-search` |
 | `/api/warehouses` | `yuordm` | GET, POST | `omnidesk-warehouses` |
 | `/api/warehouses/{id}` | `j0gcmr` | GET | `omnidesk-warehouses` |
 | `/api/stock/{product_id}` | `dwzody` | GET | `omnidesk-stock-check` |
@@ -59,10 +59,11 @@ export AWS_CONFIG_FILE=/Users/dhruvsharma/Documents/Research/OmniDesk/.aws/confi
 ### Lambda Environment Variables
 
 ```
-SECRETS_ARN      = omnidesk/db-credentials
-JWT_SECRET_ARN   = omnidesk/jwt-secret
-S3_BUCKET        = omnidesk-files-577397739686
-AUDIT_TABLE      = omnidesk-audit-log
+SECRETS_ARN        = omnidesk/db-credentials
+JWT_SECRET_ARN     = omnidesk/jwt-secret
+S3_BUCKET          = omnidesk-files-577397739686
+AUDIT_TABLE        = omnidesk-audit-log
+PINECONE_SECRET_ARN = omnidesk/pinecone    # product-create, product-update, product-search, mcp-server
 ```
 
 ---

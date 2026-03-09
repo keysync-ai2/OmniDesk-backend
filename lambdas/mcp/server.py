@@ -10,6 +10,9 @@ Auth flow:
   - Token expiry: 48 hours (configurable in jwt_helper.py)
 """
 import json
+import os
+import boto3
+from pinecone import Pinecone
 from utils.db import get_connection
 from utils.jwt_helper import verify_token
 from utils.audit import log_action
@@ -125,6 +128,18 @@ TOOLS = [
             "required": ["product_id"],
         },
     },
+    {
+        "name": "product_search",
+        "description": "Semantic search for products using natural language. Finds products by meaning, not just keyword matching. Example: 'blue clothing' finds 'Navy T-Shirt'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Natural language search query"},
+                "top_k": {"type": "integer", "description": "Number of results to return (default 10, max 50)"},
+            },
+            "required": ["query"],
+        },
+    },
     # Warehouses
     {
         "name": "warehouse_list",
@@ -211,6 +226,7 @@ TOOL_ROLES = {
     "product_create": "manager",
     "product_update": "manager",
     "product_deactivate": "admin",
+    "product_search": "viewer",
     "warehouse_list": "viewer",
     "warehouse_create": "admin",
     "stock_check": "viewer",
@@ -767,6 +783,74 @@ def handle_stock_movements(args, user=None):
         conn.close()
 
 
+_pc_client = None
+_pc_index = None
+
+
+def _get_pinecone_index():
+    """Get Pinecone index (cached per Lambda container)."""
+    global _pc_client, _pc_index
+    if _pc_index:
+        return _pc_index
+    secret_name = os.environ.get("PINECONE_SECRET_ARN", "omnidesk/pinecone")
+    sm = boto3.client("secretsmanager", region_name="us-east-1")
+    secret = json.loads(sm.get_secret_value(SecretId=secret_name)["SecretString"])
+    _pc_client = Pinecone(api_key=secret["api_key"])
+    _pc_index = _pc_client.Index("omnidesk-products")
+    return _pc_index
+
+
+def handle_product_search(args, user=None):
+    query = (args.get("query") or "").strip()
+    if not query:
+        return {"error": "query is required"}
+
+    top_k = min(max(int(args.get("top_k", 10)), 1), 50)
+
+    try:
+        index = _get_pinecone_index()
+        results = index.search(
+            namespace="products",
+            query={"inputs": {"text": query}, "top_k": top_k},
+            fields=["product_text"],
+        )
+        # Response is a Pinecone SDK object — use attribute access
+        hits = results.result.hits if hasattr(results, 'result') else []
+        if not hits:
+            return {"products": [], "total": 0, "query": query}
+
+        score_map = {h["_id"]: h.get("_score", 0) for h in hits}
+        product_ids = sorted([h["_id"] for h in hits], key=lambda pid: score_map.get(pid, 0), reverse=True)
+
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            placeholders = ", ".join(["%s"] * len(product_ids))
+            cur.execute(
+                f"""SELECT p.id, p.sku, p.name, p.description, p.category_id, c.name,
+                           p.unit_price, p.unit, p.created_at
+                    FROM products p LEFT JOIN categories c ON p.category_id = c.id
+                    WHERE p.id::text IN ({placeholders}) AND p.is_active = TRUE""",
+                product_ids,
+            )
+            rows = cur.fetchall()
+            products_by_id = {}
+            for r in rows:
+                pid = str(r[0])
+                products_by_id[pid] = {
+                    "id": pid, "sku": r[1], "name": r[2], "description": r[3],
+                    "category_id": str(r[4]) if r[4] else None, "category_name": r[5],
+                    "unit_price": str(r[6]), "unit": r[7], "created_at": str(r[8]),
+                    "relevance_score": round(score_map.get(pid, 0), 4),
+                }
+            ordered = [products_by_id[pid] for pid in product_ids if pid in products_by_id]
+            return {"products": ordered, "total": len(ordered), "query": query}
+        finally:
+            conn.close()
+    except Exception as e:
+        return {"error": f"Search failed: {str(e)}"}
+
+
 TOOL_HANDLERS = {
     "get_profile": handle_get_profile,
     "category_list": handle_category_list,
@@ -776,6 +860,7 @@ TOOL_HANDLERS = {
     "product_create": handle_product_create,
     "product_update": handle_product_update,
     "product_deactivate": handle_product_deactivate,
+    "product_search": handle_product_search,
     "warehouse_list": handle_warehouse_list,
     "warehouse_create": handle_warehouse_create,
     "stock_check": handle_stock_check,

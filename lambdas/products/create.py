@@ -8,6 +8,7 @@ from utils.db import get_connection
 from utils.response import success, error
 from utils.auth_middleware import require_auth
 from utils.audit import log_action
+from utils.pinecone_helper import upsert_product
 
 
 def _handler(event, context):
@@ -64,6 +65,10 @@ def _handler(event, context):
         product_id = str(row[0])
         log_action(user["user_id"], "create_product", "products", entity_id=product_id,
                    details={"sku": row[1], "name": row[2], "unit_price": str(row[5])})
+
+        # Index in Pinecone for semantic search (best-effort, non-blocking)
+        upsert_product(product_id, name=row[2], description=row[3],
+                       sku=row[1], unit=row[6], unit_price=str(row[5]))
 
         return success({
             "id": product_id,

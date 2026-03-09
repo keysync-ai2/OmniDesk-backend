@@ -51,6 +51,7 @@ jobs:
           package "product-create" "lambdas/products/create.py"
           package "product-list" "lambdas/products/list_get.py"
           package "product-update" "lambdas/products/update.py"
+          package "product-search" "lambdas/products/search.py"
 
           # Warehouses
           package "warehouses" "lambdas/warehouses/handler.py"
@@ -79,6 +80,7 @@ jobs:
           deploy product-create
           deploy product-list
           deploy product-update
+          deploy product-search
           deploy warehouses
           deploy stock-check
           deploy stock-adjust

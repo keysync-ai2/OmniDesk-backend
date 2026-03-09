@@ -7,6 +7,7 @@ from utils.db import get_connection
 from utils.response import success, error
 from utils.auth_middleware import require_auth
 from utils.audit import log_action
+from utils.pinecone_helper import upsert_product, delete_product
 
 
 def _update(event, context):
@@ -73,6 +74,10 @@ def _update(event, context):
         log_action(user["user_id"], "update_product", "products", entity_id=product_id,
                    details={k: str(body[k]) for k in body if k in allowed})
 
+        # Re-index in Pinecone with updated data (best-effort)
+        upsert_product(product_id, name=updated[2], description=updated[3],
+                       sku=updated[1], unit=updated[6], unit_price=str(updated[5]))
+
         return success({
             "id": str(updated[0]),
             "sku": updated[1],
@@ -111,6 +116,9 @@ def _deactivate(event, context):
 
         log_action(user["user_id"], "deactivate_product", "products", entity_id=product_id,
                    details={"name": row[1]})
+
+        # Remove from Pinecone index (best-effort)
+        delete_product(product_id)
 
         return success({"message": f"Product '{row[1]}' deactivated", "id": str(row[0])})
     except Exception as e:
