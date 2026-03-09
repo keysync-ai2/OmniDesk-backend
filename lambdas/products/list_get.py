@@ -24,7 +24,8 @@ def _get_single(product_id):
         cur.execute(
             """
             SELECT p.id, p.sku, p.name, p.description, p.category_id, c.name as category_name,
-                   p.unit_price, p.unit, p.is_active, p.created_by, p.created_at, p.updated_at
+                   p.unit_price, p.unit, p.is_active, p.created_by, p.created_at, p.updated_at,
+                   p.extra_fields
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
             WHERE p.id = %s
@@ -37,7 +38,7 @@ def _get_single(product_id):
         if not row[8]:
             return error("Product has been deactivated", 404)
 
-        return success({
+        result = {
             "id": str(row[0]),
             "sku": row[1],
             "name": row[2],
@@ -46,10 +47,12 @@ def _get_single(product_id):
             "category_name": row[5],
             "unit_price": str(row[6]),
             "unit": row[7],
+            "extra_fields": row[12] if isinstance(row[12], dict) else json.loads(row[12] or '{}'),
             "created_by": str(row[9]),
             "created_at": str(row[10]),
             "updated_at": str(row[11]),
-        })
+        }
+        return success(result)
     finally:
         conn.close()
 
@@ -86,7 +89,7 @@ def _list(event):
         cur.execute(
             f"""
             SELECT p.id, p.sku, p.name, p.description, p.category_id, c.name as category_name,
-                   p.unit_price, p.unit, p.created_at
+                   p.unit_price, p.unit, p.created_at, p.extra_fields
             FROM products p
             LEFT JOIN categories c ON p.category_id = c.id
             WHERE {where}
@@ -109,6 +112,7 @@ def _list(event):
                     "unit_price": str(r[6]),
                     "unit": r[7],
                     "created_at": str(r[8]),
+                    "extra_fields": r[9] if isinstance(r[9], dict) else json.loads(r[9] or '{}'),
                 }
                 for r in rows
             ],

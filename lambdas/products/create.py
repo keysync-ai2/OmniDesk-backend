@@ -1,7 +1,7 @@
 """Lambda: omnidesk-product-create
 POST /api/products
-Input:  {sku, name, description, category_id, unit_price, unit}
-Output: {id, sku, name, description, category_id, unit_price, unit, created_by, created_at}
+Input:  {sku, name, description, category_id, unit_price, unit, ...extra_fields}
+Output: {id, sku, name, description, category_id, unit_price, unit, extra_fields, created_by, created_at}
 """
 import json
 from utils.db import get_connection
@@ -9,6 +9,9 @@ from utils.response import success, error
 from utils.auth_middleware import require_auth
 from utils.audit import log_action
 from utils.pinecone_helper import upsert_product
+
+
+CORE_FIELDS = {"sku", "name", "description", "category_id", "unit_price", "unit"}
 
 
 def _handler(event, context):
@@ -21,6 +24,9 @@ def _handler(event, context):
     category_id = body.get("category_id")
     unit_price = body.get("unit_price")
     unit = (body.get("unit") or "pcs").strip().lower()
+
+    # Collect extra fields not in core schema
+    extra_fields = {k: v for k, v in body.items() if k not in CORE_FIELDS and v}
 
     # Validation
     if not sku:
@@ -53,11 +59,12 @@ def _handler(event, context):
 
         cur.execute(
             """
-            INSERT INTO products (sku, name, description, category_id, unit_price, unit, created_by)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            RETURNING id, sku, name, description, category_id, unit_price, unit, created_by, created_at
+            INSERT INTO products (sku, name, description, category_id, unit_price, unit, extra_fields, created_by)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id, sku, name, description, category_id, unit_price, unit, extra_fields, created_by, created_at
             """,
-            (sku, name, description, category_id, unit_price, unit, user["user_id"]),
+            (sku, name, description, category_id, unit_price, unit,
+             json.dumps(extra_fields) if extra_fields else '{}', user["user_id"]),
         )
         row = cur.fetchone()
         conn.commit()
@@ -66,11 +73,12 @@ def _handler(event, context):
         log_action(user["user_id"], "create_product", "products", entity_id=product_id,
                    details={"sku": row[1], "name": row[2], "unit_price": str(row[5])})
 
-        # Index in Pinecone for semantic search (best-effort, non-blocking)
+        # Index in Pinecone for semantic search (best-effort)
         upsert_product(product_id, name=row[2], description=row[3],
-                       sku=row[1], unit=row[6], unit_price=str(row[5]))
+                       sku=row[1], unit=row[6], unit_price=str(row[5]),
+                       extra_fields=extra_fields)
 
-        return success({
+        result = {
             "id": product_id,
             "sku": row[1],
             "name": row[2],
@@ -78,9 +86,11 @@ def _handler(event, context):
             "category_id": str(row[4]) if row[4] else None,
             "unit_price": str(row[5]),
             "unit": row[6],
-            "created_by": str(row[7]),
-            "created_at": str(row[8]),
-        }, 201)
+            "extra_fields": row[7] if isinstance(row[7], dict) else json.loads(row[7] or '{}'),
+            "created_by": str(row[8]),
+            "created_at": str(row[9]),
+        }
+        return success(result, 201)
     except Exception as e:
         conn.rollback()
         return error(f"Failed to create product: {str(e)}", 500)

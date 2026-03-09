@@ -117,6 +117,7 @@ TOOLS = [
                 "category_id": {"type": "string", "description": "Category UUID (optional)"},
                 "unit_price": {"type": "number", "description": "Price per unit"},
                 "unit": {"type": "string", "description": "Unit of measure (default: pcs)"},
+                "extra_fields": {"type": "object", "description": "Any additional product attributes (e.g. origin, weight, supplier, license, expiry) stored in DynamoDB extended data"},
             },
             "required": ["sku", "name", "unit_price"],
         },
@@ -133,6 +134,7 @@ TOOLS = [
                 "unit_price": {"type": "number", "description": "New unit price"},
                 "category_id": {"type": "string", "description": "New category UUID"},
                 "unit": {"type": "string", "description": "New unit of measure"},
+                "extra_fields": {"type": "object", "description": "Additional attributes to update in DynamoDB extended data (e.g. origin, weight, supplier)"},
             },
             "required": ["product_id"],
         },
@@ -816,7 +818,8 @@ def handle_product_get(args, user=None):
         cur = conn.cursor()
         cur.execute(
             """SELECT p.id, p.sku, p.name, p.description, p.category_id, c.name,
-                      p.unit_price, p.unit, p.is_active, p.created_by, p.created_at, p.updated_at
+                      p.unit_price, p.unit, p.is_active, p.created_by, p.created_at, p.updated_at,
+                      p.extra_fields
                FROM products p LEFT JOIN categories c ON p.category_id = c.id WHERE p.id = %s""",
             (product_id,),
         )
@@ -825,12 +828,15 @@ def handle_product_get(args, user=None):
             return {"error": "Product not found"}
         if not r[8]:
             return {"error": "Product has been deactivated"}
-        return {
+        ef = r[12] if isinstance(r[12], dict) else json.loads(r[12] or '{}')
+        result = {
             "id": str(r[0]), "sku": r[1], "name": r[2], "description": r[3],
             "category_id": str(r[4]) if r[4] else None, "category_name": r[5],
             "unit_price": str(r[6]), "unit": r[7], "created_by": str(r[9]),
             "created_at": str(r[10]), "updated_at": str(r[11]),
+            "extra_fields": ef,
         }
+        return result
     finally:
         conn.close()
 
@@ -842,6 +848,7 @@ def handle_product_create(args, user=None):
     category_id = args.get("category_id")
     unit_price = args.get("unit_price")
     unit = (args.get("unit") or "pcs").strip().lower()
+    extra_fields = args.get("extra_fields") or {}
 
     if not sku:
         return {"error": "SKU is required"}
@@ -869,20 +876,27 @@ def handle_product_create(args, user=None):
             return {"error": f"Product with SKU '{sku}' already exists"}
 
         cur.execute(
-            """INSERT INTO products (sku, name, description, category_id, unit_price, unit, created_by)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)
-               RETURNING id, sku, name, description, category_id, unit_price, unit, created_at""",
+            """INSERT INTO products (sku, name, description, category_id, unit_price, unit, extra_fields, created_by)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING id, sku, name, description, category_id, unit_price, unit, extra_fields, created_at""",
             (sku, name, description, category_id,
-             unit_price, unit, user["user_id"]),
+             unit_price, unit, json.dumps(extra_fields) if extra_fields else '{}', user["user_id"]),
         )
         r = cur.fetchone()
+        product_id = str(r[0])
         conn.commit()
-        log_action(user["user_id"], "create_product", "products", entity_id=str(r[0]),
+
+        log_action(user["user_id"], "create_product", "products", entity_id=product_id,
                    details={"sku": r[1], "name": r[2], "unit_price": str(r[5])})
+
+        # Index in Pinecone with extra fields for semantic search
+        _upsert_pinecone(product_id, r[2], r[3], r[1], r[6], str(r[5]), extra_fields)
+
+        ef = r[7] if isinstance(r[7], dict) else json.loads(r[7] or '{}')
         return {
-            "id": str(r[0]), "sku": r[1], "name": r[2], "description": r[3],
+            "id": product_id, "sku": r[1], "name": r[2], "description": r[3],
             "category_id": str(r[4]) if r[4] else None, "unit_price": str(r[5]),
-            "unit": r[6], "created_at": str(r[7]),
+            "unit": r[6], "extra_fields": ef, "created_at": str(r[8]),
         }
     except Exception as e:
         conn.rollback()
@@ -911,8 +925,15 @@ def handle_product_update(args, user=None):
             updates.append(f"{field} = %s")
             params.append(val)
 
-    if not updates:
+    extra_fields = args.get("extra_fields") or {}
+
+    if not updates and not extra_fields:
         return {"error": "No fields to update"}
+
+    # Merge extra_fields into JSONB column
+    if extra_fields:
+        updates.append("extra_fields = COALESCE(extra_fields, '{}'::jsonb) || %s::jsonb")
+        params.append(json.dumps(extra_fields))
 
     updates.append("updated_at = NOW()")
     params.append(product_id)
@@ -937,7 +958,7 @@ def handle_product_update(args, user=None):
         set_clause = ", ".join(updates)
         cur.execute(
             f"""UPDATE products SET {set_clause} WHERE id = %s AND is_active = TRUE
-                RETURNING id, sku, name, description, category_id, unit_price, unit, updated_at""",
+                RETURNING id, sku, name, description, category_id, unit_price, unit, updated_at, extra_fields""",
             params,
         )
         r = cur.fetchone()
@@ -946,10 +967,14 @@ def handle_product_update(args, user=None):
         conn.commit()
         log_action(user["user_id"], "update_product", "products", entity_id=product_id,
                    details={k: str(args[k]) for k in args if k in allowed})
+
+        ef = r[8] if isinstance(r[8], dict) else json.loads(r[8] or '{}')
+        _upsert_pinecone(product_id, r[2], r[3], r[1], r[6], str(r[5]), ef if ef else None)
+
         return {
             "id": str(r[0]), "sku": r[1], "name": r[2], "description": r[3],
             "category_id": str(r[4]) if r[4] else None, "unit_price": str(r[5]),
-            "unit": r[6], "updated_at": str(r[7]),
+            "unit": r[6], "updated_at": str(r[7]), "extra_fields": ef,
         }
     except Exception as e:
         conn.rollback()
@@ -1273,6 +1298,30 @@ def _get_pinecone_index():
     _pc_client = Pinecone(api_key=secret["api_key"])
     _pc_index = _pc_client.Index("omnidesk-products")
     return _pc_index
+
+
+def _upsert_pinecone(product_id, name, description, sku, unit, unit_price, extra_fields=None):
+    """Best-effort upsert product into Pinecone with extra fields."""
+    try:
+        index = _get_pinecone_index()
+        parts = [name]
+        if description:
+            parts.append(description)
+        if sku:
+            parts.append(f"SKU: {sku}")
+        if unit_price:
+            parts.append(f"Price: {unit_price} per {unit or 'pcs'}")
+        if extra_fields and isinstance(extra_fields, dict):
+            for k, v in extra_fields.items():
+                if v:
+                    parts.append(f"{k}: {v}")
+        product_text = " | ".join(parts)
+        index.upsert_records(namespace="products", records=[{
+            "_id": str(product_id),
+            "product_text": product_text,
+        }])
+    except Exception as e:
+        print(f"[mcp] Pinecone upsert failed for {product_id}: {e}")
 
 
 def handle_product_search(args, user=None):

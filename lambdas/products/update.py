@@ -10,6 +10,9 @@ from utils.audit import log_action
 from utils.pinecone_helper import upsert_product, delete_product
 
 
+CORE_FIELDS = {"name", "description", "category_id", "unit_price", "unit"}
+
+
 def _update(event, context):
     path_params = event.get("pathParameters") or {}
     product_id = path_params.get("id")
@@ -19,7 +22,7 @@ def _update(event, context):
     body = json.loads(event.get("body") or "{}")
     user = event["user"]
 
-    # Build dynamic SET clause
+    # Build dynamic SET clause for core fields
     allowed = {"name": str, "description": str, "category_id": str, "unit_price": float, "unit": str}
     updates = []
     params = []
@@ -34,11 +37,11 @@ def _update(event, context):
             updates.append(f"{field} = %s")
             params.append(val)
 
-    if not updates:
-        return error("No fields to update", 400)
+    # Collect extra fields
+    extra_fields = {k: v for k, v in body.items() if k not in CORE_FIELDS and v}
 
-    updates.append("updated_at = NOW()")
-    params.append(product_id)
+    if not updates and not extra_fields:
+        return error("No fields to update", 400)
 
     conn = get_connection()
     try:
@@ -58,11 +61,19 @@ def _update(event, context):
             if not cur.fetchone():
                 return error("Category not found", 404)
 
+        # Merge extra_fields into existing JSONB
+        if extra_fields:
+            updates.append("extra_fields = COALESCE(extra_fields, '{}'::jsonb) || %s::jsonb")
+            params.append(json.dumps(extra_fields))
+
+        updates.append("updated_at = NOW()")
+        params.append(product_id)
+
         set_clause = ", ".join(updates)
         cur.execute(
             f"""
             UPDATE products SET {set_clause} WHERE id = %s AND is_active = TRUE
-            RETURNING id, sku, name, description, category_id, unit_price, unit, updated_at
+            RETURNING id, sku, name, description, category_id, unit_price, unit, updated_at, extra_fields
             """,
             params,
         )
@@ -74,9 +85,11 @@ def _update(event, context):
         log_action(user["user_id"], "update_product", "products", entity_id=product_id,
                    details={k: str(body[k]) for k in body if k in allowed})
 
-        # Re-index in Pinecone with updated data (best-effort)
+        # Re-index in Pinecone with updated data + extra fields (best-effort)
+        ef = updated[8] if isinstance(updated[8], dict) else json.loads(updated[8] or '{}')
         upsert_product(product_id, name=updated[2], description=updated[3],
-                       sku=updated[1], unit=updated[6], unit_price=str(updated[5]))
+                       sku=updated[1], unit=updated[6], unit_price=str(updated[5]),
+                       extra_fields=ef if ef else None)
 
         return success({
             "id": str(updated[0]),
@@ -87,6 +100,7 @@ def _update(event, context):
             "unit_price": str(updated[5]),
             "unit": updated[6],
             "updated_at": str(updated[7]),
+            "extra_fields": ef,
         })
     except Exception as e:
         conn.rollback()

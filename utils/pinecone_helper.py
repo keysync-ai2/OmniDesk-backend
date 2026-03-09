@@ -27,7 +27,7 @@ def _get_index():
     return _pc_index
 
 
-def build_product_text(name, description=None, sku=None, unit=None, unit_price=None):
+def build_product_text(name, description=None, sku=None, unit=None, unit_price=None, extra_fields=None):
     """Build a combined text string for embedding a product."""
     parts = [name]
     if description:
@@ -36,17 +36,21 @@ def build_product_text(name, description=None, sku=None, unit=None, unit_price=N
         parts.append(f"SKU: {sku}")
     if unit_price is not None:
         parts.append(f"Price: {unit_price} per {unit or 'pcs'}")
+    if extra_fields and isinstance(extra_fields, dict):
+        for key, val in extra_fields.items():
+            if val:
+                parts.append(f"{key}: {val}")
     return " | ".join(parts)
 
 
-def upsert_product(product_id, name, description=None, sku=None, unit=None, unit_price=None):
+def upsert_product(product_id, name, description=None, sku=None, unit=None, unit_price=None, extra_fields=None):
     """Upsert a product vector into Pinecone using integrated inference.
 
     With integrated inference, we provide text and Pinecone handles embedding.
     """
     try:
         index = _get_index()
-        product_text = build_product_text(name, description, sku, unit, unit_price)
+        product_text = build_product_text(name, description, sku, unit, unit_price, extra_fields)
 
         # Upsert record — Pinecone auto-embeds the product_text field
         index.upsert_records(

@@ -155,13 +155,14 @@ aws lambda update-function-code \
   --region us-east-1
 ```
 
-### Lambda without shared layer (e.g., MCP server)
+### MCP server packaging
 
-MCP server has no external deps — skip `--layers` and `utils/` copy:
+MCP server imports from `utils/` — it **must** include the `utils/` directory like all other Lambdas:
 
 ```bash
 mkdir -p /tmp/omnidesk-deploy/mcp-server
 cp lambdas/mcp/server.py /tmp/omnidesk-deploy/mcp-server/lambda_function.py
+cp -r utils /tmp/omnidesk-deploy/mcp-server/utils
 cd /tmp/omnidesk-deploy/mcp-server
 zip -r /tmp/omnidesk-mcp-server.zip .
 
@@ -258,7 +259,77 @@ aws apigateway create-deployment \
 
 ---
 
-## 5. Debugging
+## 5. Run Database Migrations
+
+The local IAM user (`backend-dev`) does not have Secrets Manager access, so migrations must run via a temporary Lambda that reads DB credentials from Secrets Manager.
+
+```bash
+# Step 1: Create temp migration Lambda
+mkdir -p /tmp/omnidesk-deploy/migration
+cat > /tmp/omnidesk-deploy/migration/lambda_function.py << 'PYEOF'
+import json, os, boto3, psycopg2
+
+def lambda_handler(event, context):
+    sql = event.get("sql", "")
+    if not sql:
+        return {"statusCode": 400, "body": "No SQL provided"}
+    secret_arn = os.environ.get("SECRETS_ARN", "omnidesk/db-credentials")
+    client = boto3.client("secretsmanager", region_name="us-east-1")
+    secret = json.loads(client.get_secret_value(SecretId=secret_arn)["SecretString"])
+    conn_str = secret.get("connection_string") or \
+        f"postgresql://{secret['username']}:{secret['password']}@{secret['host']}:{secret['port']}/{secret['dbname']}?sslmode=require"
+    conn = psycopg2.connect(conn_str)
+    conn.autocommit = True
+    cur = conn.cursor()
+    try:
+        cur.execute(sql)
+        return {"statusCode": 200, "body": json.dumps({"success": True})}
+    except Exception as e:
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+    finally:
+        cur.close()
+        conn.close()
+PYEOF
+
+cd /tmp/omnidesk-deploy/migration && zip -r /tmp/omnidesk-migration.zip .
+
+aws lambda create-function \
+  --function-name omnidesk-run-migration \
+  --runtime python3.11 --architectures arm64 \
+  --handler lambda_function.lambda_handler \
+  --role "arn:aws:iam::577397739686:role/omnidesk-lambda-role" \
+  --zip-file fileb:///tmp/omnidesk-migration.zip \
+  --layers "arn:aws:lambda:us-east-1:577397739686:layer:omnidesk-shared-layer:10" \
+  --memory-size 256 --timeout 30 \
+  --environment '{"Variables":{"SECRETS_ARN":"omnidesk/db-credentials"}}' \
+  --region us-east-1
+
+# Step 2: Run the SQL (write payload to file to avoid shell escaping issues)
+echo '{"sql":"<YOUR SQL HERE>"}' > /tmp/migration-payload.json
+
+aws lambda invoke \
+  --function-name omnidesk-run-migration \
+  --cli-binary-format raw-in-base64-out \
+  --payload file:///tmp/migration-payload.json \
+  --region us-east-1 \
+  /tmp/migration-response.json && cat /tmp/migration-response.json
+
+# Step 3: Clean up
+aws lambda delete-function --function-name omnidesk-run-migration --region us-east-1
+```
+
+### Migration History
+
+| Migration | File | Description |
+|-----------|------|-------------|
+| 001 | `001_initial_schema.sql` | Full schema — 22 tables, indexes, constraints |
+| 002 | `002_add_warehouse_to_movements.sql` | Added `warehouse_id` to `stock_movements` |
+| 003 | `003_org_settings.sql` | `org_settings` table + 11 default rows |
+| 004 | `004_product_extra_fields.sql` | Added `extra_fields JSONB DEFAULT '{}'` to `products` |
+
+---
+
+## 6. Debugging
 
 ### Check CloudWatch Logs
 
@@ -313,7 +384,7 @@ curl -s -X POST "$BASE/mcp" -H "Content-Type: application/json" \
 
 ---
 
-## 6. MCP Token Management
+## 7. MCP Token Management
 
 ### Generate a new 48h token
 
