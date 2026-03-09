@@ -29,8 +29,22 @@ export AWS_CONFIG_FILE=/Users/dhruvsharma/Documents/Research/OmniDesk/.aws/confi
 | `/api/auth/login` | `d2atka` | POST | `omnidesk-auth-login` |
 | `/api/auth/me` | `t2ychm` | GET | `omnidesk-auth-me` |
 | `/mcp` | `fsr82g` | POST | `omnidesk-mcp-server` |
+| `/api/categories` | `1e27t0` | GET, POST | `omnidesk-categories` |
+| `/api/categories/{id}` | `jrt9r5` | GET | `omnidesk-categories` |
+| `/api/products` | `dmil9x` | GET, POST | `omnidesk-product-list`, `omnidesk-product-create` |
+| `/api/products/{id}` | `t8xk6z` | GET, PUT | `omnidesk-product-list`, `omnidesk-product-update` |
+| `/api/products/{id}/deactivate` | `9fj13j` | PATCH | `omnidesk-product-update` |
+| `/api/products/search` | `ai071f` | GET | `omnidesk-product-list` |
+| `/api/warehouses` | `yuordm` | GET, POST | `omnidesk-warehouses` |
+| `/api/warehouses/{id}` | `j0gcmr` | GET | `omnidesk-warehouses` |
+| `/api/stock/{product_id}` | `dwzody` | GET | `omnidesk-stock-check` |
+| `/api/stock/adjust` | `qtek0v` | POST | `omnidesk-stock-adjust` |
+| `/api/stock/low` | `h7113j` | GET | `omnidesk-stock-low` |
+| `/api/stock/movements/{product_id}` | `7a580d` | GET | `omnidesk-stock-movements` |
 | `/api` | `bdbaw3` | — | — |
 | `/api/auth` | `xcx7sm` | — | — |
+| `/api/stock` | `pbghbw` | — | — |
+| `/api/stock/movements` | `in9yz8` | — | — |
 | Root `/` | `683b9dp63l` | — | — |
 
 ### IAM Role Policies

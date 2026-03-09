@@ -23,55 +23,64 @@ jobs:
         with:
           python-version: '3.11'
 
-      # Package each Lambda: copy handler as lambda_function.py + utils/
-      - name: Package auth-register
+      # Package helper — creates zip with lambda_function.py + utils/
+      - name: Package all Lambdas
         run: |
-          mkdir -p /tmp/deploy/auth-register
-          cp lambdas/auth/register.py /tmp/deploy/auth-register/lambda_function.py
-          cp -r utils /tmp/deploy/auth-register/utils
-          cd /tmp/deploy/auth-register && zip -r /tmp/omnidesk-auth-register.zip .
+          package() {
+            local name="$1"
+            local source="$2"
+            mkdir -p "/tmp/deploy/$name"
+            cp "$source" "/tmp/deploy/$name/lambda_function.py"
+            cp -r utils "/tmp/deploy/$name/utils"
+            cd "/tmp/deploy/$name" && zip -r "/tmp/omnidesk-$name.zip" .
+            cd "$GITHUB_WORKSPACE"
+          }
 
-      - name: Package auth-login
-        run: |
-          mkdir -p /tmp/deploy/auth-login
-          cp lambdas/auth/login.py /tmp/deploy/auth-login/lambda_function.py
-          cp -r utils /tmp/deploy/auth-login/utils
-          cd /tmp/deploy/auth-login && zip -r /tmp/omnidesk-auth-login.zip .
+          # Auth
+          package "auth-register" "lambdas/auth/register.py"
+          package "auth-login" "lambdas/auth/login.py"
+          package "auth-me" "lambdas/auth/me.py"
 
-      - name: Package auth-me
-        run: |
-          mkdir -p /tmp/deploy/auth-me
-          cp lambdas/auth/me.py /tmp/deploy/auth-me/lambda_function.py
-          cp -r utils /tmp/deploy/auth-me/utils
-          cd /tmp/deploy/auth-me && zip -r /tmp/omnidesk-auth-me.zip .
+          # MCP Server (needs utils for DB, JWT, audit)
+          package "mcp-server" "lambdas/mcp/server.py"
 
-      - name: Package mcp-server
-        run: |
-          mkdir -p /tmp/deploy/mcp-server
-          cp lambdas/mcp/server.py /tmp/deploy/mcp-server/lambda_function.py
-          cd /tmp/deploy/mcp-server && zip -r /tmp/omnidesk-mcp-server.zip .
+          # Categories
+          package "categories" "lambdas/categories/handler.py"
+
+          # Products
+          package "product-create" "lambdas/products/create.py"
+          package "product-list" "lambdas/products/list_get.py"
+          package "product-update" "lambdas/products/update.py"
+
+          # Warehouses
+          package "warehouses" "lambdas/warehouses/handler.py"
+
+          # Stock
+          package "stock-check" "lambdas/stock/check.py"
+          package "stock-adjust" "lambdas/stock/adjust.py"
+          package "stock-low" "lambdas/stock/low_alerts.py"
+          package "stock-movements" "lambdas/stock/movements.py"
 
       # Deploy all functions
-      - name: Deploy auth-register
+      - name: Deploy all Lambdas
         run: |
-          aws lambda update-function-code \
-            --function-name omnidesk-auth-register \
-            --zip-file fileb:///tmp/omnidesk-auth-register.zip
+          deploy() {
+            echo "Deploying omnidesk-$1..."
+            aws lambda update-function-code \
+              --function-name "omnidesk-$1" \
+              --zip-file "fileb:///tmp/omnidesk-$1.zip"
+          }
 
-      - name: Deploy auth-login
-        run: |
-          aws lambda update-function-code \
-            --function-name omnidesk-auth-login \
-            --zip-file fileb:///tmp/omnidesk-auth-login.zip
-
-      - name: Deploy auth-me
-        run: |
-          aws lambda update-function-code \
-            --function-name omnidesk-auth-me \
-            --zip-file fileb:///tmp/omnidesk-auth-me.zip
-
-      - name: Deploy mcp-server
-        run: |
-          aws lambda update-function-code \
-            --function-name omnidesk-mcp-server \
-            --zip-file fileb:///tmp/omnidesk-mcp-server.zip
+          deploy auth-register
+          deploy auth-login
+          deploy auth-me
+          deploy mcp-server
+          deploy categories
+          deploy product-create
+          deploy product-list
+          deploy product-update
+          deploy warehouses
+          deploy stock-check
+          deploy stock-adjust
+          deploy stock-low
+          deploy stock-movements
