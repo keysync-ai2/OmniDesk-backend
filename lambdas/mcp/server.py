@@ -19,7 +19,7 @@ from utils.audit import log_action
 
 SERVER_INFO = {
     "name": "omnidesk-mcp",
-    "version": "2.1.0",
+    "version": "3.0.0",
 }
 
 PROTOCOL_VERSION = "2025-03-26"
@@ -48,7 +48,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "module": {"type": "string", "enum": ["all", "products", "stock", "categories", "warehouses", "auth"], "description": "Filter help by module (default: all)"},
+                "module": {"type": "string", "enum": ["all", "products", "stock", "categories", "warehouses", "orders", "invoices", "auth"], "description": "Filter help by module (default: all)"},
             },
         },
     },
@@ -226,6 +226,157 @@ TOOLS = [
             "required": ["product_id"],
         },
     },
+    # ── Orders ────────────────────────────────────────────────────────
+    {
+        "name": "order_create",
+        "description": "Create a new order with line items. Example: 'Create order for Rahul — 3 Blue T-Shirts and 2 Black Sneakers'. Auto-calculates totals. Stock is NOT deducted yet — only when order is confirmed. Requires staff role or higher.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "customer_name": {"type": "string", "description": "Customer name"},
+                "customer_email": {"type": "string", "description": "Customer email (optional)"},
+                "customer_phone": {"type": "string", "description": "Customer phone (optional)"},
+                "items": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "product_id": {"type": "string", "description": "Product UUID"},
+                            "quantity": {"type": "integer", "description": "Quantity"},
+                        },
+                        "required": ["product_id", "quantity"],
+                    },
+                    "description": "List of products and quantities",
+                },
+                "notes": {"type": "string", "description": "Order notes (optional)"},
+            },
+            "required": ["customer_name", "items"],
+        },
+    },
+    {
+        "name": "order_list",
+        "description": "List orders with pagination. Filter by status (pending/confirmed/shipped/delivered/cancelled), date range, or search by customer name/order number. Example: 'Show me all pending orders'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["pending", "confirmed", "shipped", "delivered", "cancelled"], "description": "Filter by status"},
+                "from_date": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
+                "to_date": {"type": "string", "description": "End date (YYYY-MM-DD)"},
+                "search": {"type": "string", "description": "Search by customer name or order number"},
+                "page": {"type": "integer", "description": "Page number (default 1)"},
+                "limit": {"type": "integer", "description": "Items per page (default 20)"},
+            },
+        },
+    },
+    {
+        "name": "order_get",
+        "description": "Get a single order with full details including all line items, product names, and pricing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "Order UUID"},
+            },
+            "required": ["order_id"],
+        },
+    },
+    {
+        "name": "order_update_status",
+        "description": "Update order status. Valid transitions: pending→confirmed→shipped→delivered. On 'confirmed', stock is automatically deducted. Requires staff role or higher. To cancel, use order_cancel instead.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "Order UUID"},
+                "status": {"type": "string", "enum": ["confirmed", "shipped", "delivered"], "description": "New status"},
+                "warehouse_id": {"type": "string", "description": "Warehouse for stock deduction (needed when confirming, defaults to first warehouse)"},
+            },
+            "required": ["order_id", "status"],
+        },
+    },
+    {
+        "name": "order_cancel",
+        "description": "Cancel an order (admin only). Has a confirmation gate — first call shows a preview, second call with confirm:true actually cancels. If order was confirmed, stock is automatically restored.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "Order UUID"},
+                "confirm": {"type": "boolean", "description": "Set to true to confirm cancellation (required on second call)"},
+            },
+            "required": ["order_id"],
+        },
+    },
+    {
+        "name": "order_history",
+        "description": "Get the full status change history for an order. Shows who changed what and when.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "Order UUID"},
+            },
+            "required": ["order_id"],
+        },
+    },
+    # ── Invoices ──────────────────────────────────────────────────────
+    {
+        "name": "invoice_generate",
+        "description": "Generate an invoice from an order. Creates an HTML invoice with line items and uploads to S3. Supports GST tax rate. Example: 'Generate invoice for Order ORD-20260309-A3F7 with 18% GST'. Requires manager role.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "Order UUID to generate invoice for"},
+                "tax_rate": {"type": "number", "description": "Tax rate percentage (e.g., 18 for 18% GST, default 0)"},
+                "due_date": {"type": "string", "description": "Due date YYYY-MM-DD (default: 30 days from now)"},
+            },
+            "required": ["order_id"],
+        },
+    },
+    {
+        "name": "invoice_list",
+        "description": "List invoices with pagination. Filter by payment status (unpaid/paid/overdue/partial) or date range. Example: 'Show me all unpaid invoices'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "payment_status": {"type": "string", "enum": ["unpaid", "paid", "overdue", "partial"], "description": "Filter by payment status"},
+                "from_date": {"type": "string", "description": "Start date (YYYY-MM-DD)"},
+                "to_date": {"type": "string", "description": "End date (YYYY-MM-DD)"},
+                "search": {"type": "string", "description": "Search by invoice number, customer, or order number"},
+                "page": {"type": "integer", "description": "Page number (default 1)"},
+                "limit": {"type": "integer", "description": "Items per page (default 20)"},
+            },
+        },
+    },
+    {
+        "name": "invoice_get",
+        "description": "Get full details of a single invoice including order info and amounts.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "invoice_id": {"type": "string", "description": "Invoice UUID"},
+            },
+            "required": ["invoice_id"],
+        },
+    },
+    {
+        "name": "invoice_download",
+        "description": "Get a download link for an invoice. Returns a time-limited URL (15 minutes) to view/print the invoice.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "invoice_id": {"type": "string", "description": "Invoice UUID"},
+            },
+            "required": ["invoice_id"],
+        },
+    },
+    {
+        "name": "invoice_send",
+        "description": "Send an invoice to the customer. Currently provides a download link (email delivery coming in Phase 4). Marks the invoice as 'sent'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "invoice_id": {"type": "string", "description": "Invoice UUID"},
+            },
+            "required": ["invoice_id"],
+        },
+    },
 ]
 
 # ── RBAC ───────────────────────────────────────────────────────────────
@@ -251,6 +402,17 @@ TOOL_ROLES = {
     "stock_adjust": "staff",
     "stock_low_alerts": "viewer",
     "stock_movements": "manager",
+    "order_create": "staff",
+    "order_list": "viewer",
+    "order_get": "viewer",
+    "order_update_status": "staff",
+    "order_cancel": "admin",
+    "order_history": "viewer",
+    "invoice_generate": "manager",
+    "invoice_list": "viewer",
+    "invoice_get": "viewer",
+    "invoice_download": "viewer",
+    "invoice_send": "manager",
 }
 
 
@@ -295,6 +457,12 @@ def handle_omnidesk_start(args, user=None):
         cur.execute("SELECT COUNT(*) FROM warehouses WHERE is_active = TRUE")
         total_warehouses = cur.fetchone()[0]
 
+        cur.execute("SELECT COUNT(*) FROM orders WHERE status NOT IN ('cancelled', 'delivered')")
+        active_orders = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM invoices WHERE payment_status = 'unpaid'")
+        unpaid_invoices = cur.fetchone()[0]
+
         # Low stock alerts
         cur.execute(
             """SELECT p.name, p.sku, s.quantity, s.low_stock_threshold, w.name
@@ -307,25 +475,66 @@ def handle_omnidesk_start(args, user=None):
             for r in cur.fetchall()
         ]
 
-        return {
-            "welcome": f"Welcome back, {profile['full_name']}!",
-            "profile": profile,
-            "dashboard": {
-                "total_products": total_products,
-                "total_categories": total_categories,
-                "total_warehouses": total_warehouses,
-                "low_stock_alerts": len(low_stock),
-            },
-            "low_stock_items": low_stock if low_stock else "All products are well stocked.",
-            "quick_actions": [
-                "Try: 'Show me all products'",
-                "Try: 'Add a new product'",
-                "Try: 'Check stock for [product name]'",
-                "Try: 'Search for [description]'",
-                "Try: 'Show low stock alerts'",
-                "Say 'help' for full command list",
-            ],
-        }
+        # Build formatted markdown response (Design 4 — Conversational + Structured)
+        name = profile["full_name"] or "there"
+        lines = []
+
+        lines.append(f"## Welcome back, {name}!")
+        lines.append("")
+        lines.append(f"You're logged in as **{profile['email']}** ({profile['role']}).")
+        lines.append("")
+        lines.append("Here's what's happening in your business right now:")
+        lines.append("")
+        lines.append("---")
+        lines.append("")
+
+        # Business snapshot
+        lines.append("### Your Numbers")
+        lines.append("")
+        lines.append("| | Count |")
+        lines.append("|---|------:|")
+        lines.append(f"| Products in catalog | {total_products} |")
+        lines.append(f"| Product categories | {total_categories} |")
+        lines.append(f"| Warehouses | {total_warehouses} |")
+        lines.append(f"| Orders in progress | {active_orders} |")
+        lines.append(f"| Invoices awaiting payment | {unpaid_invoices} |")
+        lines.append("")
+
+        # Low stock alerts
+        if low_stock:
+            lines.append("### Needs Attention")
+            lines.append("")
+            lines.append("These items are running low on stock:")
+            lines.append("")
+            lines.append("| Product | In Stock | Min Required |")
+            lines.append("|---------|----------|--------------|")
+            for item in low_stock:
+                lines.append(f"| {item['product']} | {item['quantity']} units | {item['threshold']} units |")
+            lines.append("")
+            lines.append('*Consider restocking soon — say "Add [qty] units of [product] to [warehouse]"*')
+            lines.append("")
+        else:
+            lines.append("### Stock Status")
+            lines.append("")
+            lines.append("All products are well stocked. No alerts right now.")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("")
+
+        # Quick actions
+        lines.append("### What can I help with?")
+        lines.append("")
+        lines.append("**Most used commands:**")
+        lines.append('1. "Show all products"')
+        lines.append('2. "Create order for [customer] — [items]"')
+        lines.append('3. "Show low stock alerts"')
+        lines.append('4. "Generate invoice for [order]"')
+        lines.append('5. "Search for [keyword]"')
+        lines.append("")
+        lines.append('**Need more?** Just say "help" for the full command menu across all 7 modules.')
+
+        return {"text": "\n".join(lines)}
     finally:
         conn.close()
 
@@ -376,6 +585,27 @@ def handle_omnidesk_help(args, user=None):
                 {"command": "stock_movements", "description": "Stock change history (manager+)", "example": "Show stock history for Blue T-Shirt"},
             ],
         },
+        "orders": {
+            "title": "Order Management",
+            "tools": [
+                {"command": "order_create", "description": "Create a new order (staff+)", "example": "Create order for Rahul — 3 Blue T-Shirts"},
+                {"command": "order_list", "description": "List/search orders", "example": "Show all pending orders"},
+                {"command": "order_get", "description": "Get order details with items", "example": "Show details of Order ORD-20260309-A3F7"},
+                {"command": "order_update_status", "description": "Update order status (staff+)", "example": "Mark order as confirmed"},
+                {"command": "order_cancel", "description": "Cancel an order (admin only)", "example": "Cancel Order ORD-20260309-A3F7"},
+                {"command": "order_history", "description": "View order status timeline", "example": "Show history for this order"},
+            ],
+        },
+        "invoices": {
+            "title": "Invoices",
+            "tools": [
+                {"command": "invoice_generate", "description": "Generate invoice from order (manager+)", "example": "Generate invoice for this order with 18% GST"},
+                {"command": "invoice_list", "description": "List/search invoices", "example": "Show all unpaid invoices"},
+                {"command": "invoice_get", "description": "Get invoice details", "example": "Show invoice INV-20260309-B4K2"},
+                {"command": "invoice_download", "description": "Get download link for invoice", "example": "Download this invoice"},
+                {"command": "invoice_send", "description": "Send invoice to customer (manager+)", "example": "Send this invoice to the customer"},
+            ],
+        },
     }
 
     if module_filter != "all" and module_filter in help_sections:
@@ -384,10 +614,10 @@ def handle_omnidesk_help(args, user=None):
         sections = help_sections
 
     role_info = {
-        "viewer": "Can view products, stock, categories",
-        "staff": "Can adjust stock + all viewer actions",
-        "manager": "Can create/update products & categories + all staff actions",
-        "admin": "Full access — create warehouses, deactivate products, all actions",
+        "viewer": "Can view products, stock, orders, invoices, categories",
+        "staff": "Can adjust stock, create/update orders + all viewer actions",
+        "manager": "Can create products, generate invoices + all staff actions",
+        "admin": "Full access — cancel orders, create warehouses, deactivate products",
     }
 
     return {
@@ -1008,6 +1238,737 @@ def handle_product_search(args, user=None):
         return {"error": f"Search failed: {str(e)}"}
 
 
+# ── Order Handlers ─────────────────────────────────────────────────────
+
+import random
+import string
+from datetime import datetime, timezone, timedelta
+
+VALID_TRANSITIONS = {
+    "pending": ["confirmed", "cancelled"],
+    "confirmed": ["shipped", "cancelled"],
+    "shipped": ["delivered"],
+    "delivered": [],
+    "cancelled": [],
+}
+
+
+def _generate_number(prefix):
+    date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
+    rand_part = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    return f"{prefix}-{date_part}-{rand_part}"
+
+
+def handle_order_create(args, user=None):
+    customer_name = (args.get("customer_name") or "").strip()
+    customer_email = (args.get("customer_email") or "").strip() or None
+    customer_phone = (args.get("customer_phone") or "").strip() or None
+    items = args.get("items") or []
+    notes = (args.get("notes") or "").strip() or None
+
+    if not customer_name:
+        return {"error": "customer_name is required"}
+    if not items or not isinstance(items, list):
+        return {"error": "items is required (array of {product_id, quantity})"}
+
+    for i, item in enumerate(items):
+        if not item.get("product_id"):
+            return {"error": f"items[{i}].product_id is required"}
+        try:
+            qty = int(item.get("quantity", 0))
+            if qty <= 0:
+                raise ValueError
+            item["quantity"] = qty
+        except (ValueError, TypeError):
+            return {"error": f"items[{i}].quantity must be a positive integer"}
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        product_ids = [item["product_id"] for item in items]
+        placeholders = ",".join(["%s"] * len(product_ids))
+        cur.execute(
+            f"SELECT id, name, sku, unit_price FROM products WHERE id IN ({placeholders}) AND is_active = TRUE",
+            product_ids,
+        )
+        products = {str(r[0]): {"name": r[1], "sku": r[2], "unit_price": r[3]} for r in cur.fetchall()}
+
+        missing = [pid for pid in product_ids if pid not in products]
+        if missing:
+            return {"error": f"Products not found: {', '.join(missing)}"}
+
+        order_number = _generate_number("ORD")
+        for _ in range(5):
+            cur.execute("SELECT id FROM orders WHERE order_number = %s", (order_number,))
+            if not cur.fetchone():
+                break
+            order_number = _generate_number("ORD")
+
+        subtotal = 0
+        order_items_data = []
+        for item in items:
+            product = products[item["product_id"]]
+            item_total = float(product["unit_price"]) * item["quantity"]
+            subtotal += item_total
+            order_items_data.append({
+                "product_id": item["product_id"], "product_name": product["name"],
+                "sku": product["sku"], "quantity": item["quantity"],
+                "unit_price": float(product["unit_price"]), "total_price": item_total,
+            })
+
+        cur.execute(
+            """INSERT INTO orders (order_number, customer_name, customer_email, customer_phone,
+                   status, subtotal, total_amount, notes, created_by)
+               VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s, %s)
+               RETURNING id, order_number, status, created_at""",
+            (order_number, customer_name, customer_email, customer_phone,
+             subtotal, subtotal, notes, user["user_id"]),
+        )
+        order_row = cur.fetchone()
+        order_id = str(order_row[0])
+
+        result_items = []
+        for oi in order_items_data:
+            cur.execute(
+                """INSERT INTO order_items (order_id, product_id, quantity, unit_price, total_price)
+                   VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                (order_id, oi["product_id"], oi["quantity"], oi["unit_price"], oi["total_price"]),
+            )
+            result_items.append({
+                "id": str(cur.fetchone()[0]), "product_name": oi["product_name"],
+                "sku": oi["sku"], "quantity": oi["quantity"],
+                "unit_price": oi["unit_price"], "total_price": oi["total_price"],
+            })
+
+        cur.execute(
+            "INSERT INTO order_status_history (order_id, from_status, to_status, changed_by) VALUES (%s, NULL, 'pending', %s)",
+            (order_id, user["user_id"]),
+        )
+        conn.commit()
+
+        log_action(user["user_id"], "create_order", "orders", entity_id=order_id,
+                   details={"order_number": order_row[1], "customer": customer_name, "total": str(subtotal)})
+
+        return {
+            "id": order_id, "order_number": order_row[1], "customer_name": customer_name,
+            "customer_email": customer_email, "customer_phone": customer_phone,
+            "status": "pending", "items": result_items,
+            "subtotal": str(subtotal), "total_amount": str(subtotal),
+            "notes": notes, "created_at": str(order_row[3]),
+        }
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+def handle_order_list(args, user=None):
+    page = max(int(args.get("page", 1)), 1)
+    limit = min(max(int(args.get("limit", 20)), 1), 100)
+    offset = (page - 1) * limit
+    status_filter = (args.get("status") or "").strip().lower() or None
+    from_date = args.get("from_date")
+    to_date = args.get("to_date")
+    search = (args.get("search") or "").strip()
+
+    conditions = []
+    params = []
+    if status_filter:
+        conditions.append("o.status = %s")
+        params.append(status_filter)
+    if from_date:
+        conditions.append("o.created_at >= %s")
+        params.append(from_date)
+    if to_date:
+        conditions.append("o.created_at <= %s")
+        params.append(to_date)
+    if search:
+        conditions.append("(o.customer_name ILIKE %s OR o.order_number ILIKE %s)")
+        params.extend([f"%{search}%", f"%{search}%"])
+
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM orders o {where}", params)
+        total = cur.fetchone()[0]
+        cur.execute(
+            f"""SELECT o.id, o.order_number, o.customer_name, o.customer_email,
+                       o.status, o.total_amount, o.created_at
+                FROM orders o {where} ORDER BY o.created_at DESC LIMIT %s OFFSET %s""",
+            params + [limit, offset],
+        )
+        rows = cur.fetchall()
+        return {
+            "orders": [{
+                "id": str(r[0]), "order_number": r[1], "customer_name": r[2],
+                "customer_email": r[3], "status": r[4],
+                "total_amount": str(r[5]), "created_at": str(r[6]),
+            } for r in rows],
+            "total": total, "page": page, "limit": limit,
+        }
+    finally:
+        conn.close()
+
+
+def handle_order_get(args, user=None):
+    order_id = args.get("order_id")
+    if not order_id:
+        return {"error": "order_id is required"}
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT o.id, o.order_number, o.customer_name, o.customer_email, o.customer_phone,
+                      o.status, o.subtotal, o.tax_amount, o.discount_amount, o.total_amount,
+                      o.notes, o.created_by, o.created_at, o.updated_at
+               FROM orders o WHERE o.id = %s""",
+            (order_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"error": "Order not found"}
+
+        cur.execute(
+            """SELECT oi.id, oi.product_id, p.name, p.sku, oi.quantity, oi.unit_price, oi.total_price
+               FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = %s""",
+            (order_id,),
+        )
+        items = [{
+            "id": str(r[0]), "product_id": str(r[1]), "product_name": r[2],
+            "sku": r[3], "quantity": r[4], "unit_price": str(r[5]), "total_price": str(r[6]),
+        } for r in cur.fetchall()]
+
+        return {
+            "id": str(row[0]), "order_number": row[1],
+            "customer_name": row[2], "customer_email": row[3], "customer_phone": row[4],
+            "status": row[5], "subtotal": str(row[6]),
+            "tax_amount": str(row[7]), "discount_amount": str(row[8]),
+            "total_amount": str(row[9]), "notes": row[10],
+            "created_by": str(row[11]), "created_at": str(row[12]),
+            "updated_at": str(row[13]), "items": items,
+        }
+    finally:
+        conn.close()
+
+
+def _deduct_stock_for_order(cur, order_id, warehouse_id, user_id):
+    cur.execute(
+        "SELECT oi.product_id, oi.quantity, p.name FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = %s",
+        (order_id,),
+    )
+    items = cur.fetchall()
+    if not warehouse_id:
+        cur.execute("SELECT id FROM warehouses WHERE is_active = TRUE ORDER BY created_at LIMIT 1")
+        wh = cur.fetchone()
+        if not wh:
+            raise ValueError("No active warehouse found")
+        warehouse_id = str(wh[0])
+
+    for product_id, qty, product_name in items:
+        cur.execute("SELECT id, quantity FROM stock WHERE product_id = %s AND warehouse_id = %s", (str(product_id), warehouse_id))
+        stock_row = cur.fetchone()
+        current_qty = stock_row[1] if stock_row else 0
+        if current_qty < qty:
+            raise ValueError(f"Insufficient stock for {product_name}: have {current_qty}, need {qty}")
+        new_qty = current_qty - qty
+        if stock_row:
+            cur.execute("UPDATE stock SET quantity = %s, updated_at = NOW() WHERE id = %s", (new_qty, stock_row[0]))
+        else:
+            cur.execute("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (%s, %s, %s)", (str(product_id), warehouse_id, new_qty))
+        cur.execute(
+            "INSERT INTO stock_movements (product_id, warehouse_id, movement_type, quantity, reason, performed_by) VALUES (%s, %s, 'deduct', %s, %s, %s)",
+            (str(product_id), warehouse_id, qty, f"Order confirmed (order_id: {order_id})", user_id),
+        )
+
+
+def _restore_stock_for_order(cur, order_id, user_id):
+    cur.execute("SELECT oi.product_id, oi.quantity FROM order_items oi WHERE oi.order_id = %s", (order_id,))
+    items = cur.fetchall()
+    cur.execute(
+        "SELECT DISTINCT warehouse_id FROM stock_movements WHERE reason LIKE %s AND movement_type = 'deduct' AND warehouse_id IS NOT NULL LIMIT 1",
+        (f"%{order_id}%",),
+    )
+    wh_row = cur.fetchone()
+    if not wh_row:
+        cur.execute("SELECT id FROM warehouses WHERE is_active = TRUE ORDER BY created_at LIMIT 1")
+        wh_row = cur.fetchone()
+    warehouse_id = str(wh_row[0]) if wh_row else None
+    if not warehouse_id:
+        return
+
+    for product_id, qty in items:
+        cur.execute("SELECT id, quantity FROM stock WHERE product_id = %s AND warehouse_id = %s", (str(product_id), warehouse_id))
+        stock_row = cur.fetchone()
+        current_qty = stock_row[1] if stock_row else 0
+        new_qty = current_qty + qty
+        if stock_row:
+            cur.execute("UPDATE stock SET quantity = %s, updated_at = NOW() WHERE id = %s", (new_qty, stock_row[0]))
+        else:
+            cur.execute("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (%s, %s, %s)", (str(product_id), warehouse_id, new_qty))
+        cur.execute(
+            "INSERT INTO stock_movements (product_id, warehouse_id, movement_type, quantity, reason, performed_by) VALUES (%s, %s, 'add', %s, %s, %s)",
+            (str(product_id), warehouse_id, qty, f"Order cancelled - stock restored (order_id: {order_id})", user_id),
+        )
+
+
+def handle_order_update_status(args, user=None):
+    order_id = args.get("order_id")
+    new_status = (args.get("status") or "").strip().lower()
+    warehouse_id = args.get("warehouse_id")
+
+    if not order_id:
+        return {"error": "order_id is required"}
+    if not new_status:
+        return {"error": "status is required"}
+    if new_status == "cancelled":
+        return {"error": "Use order_cancel to cancel orders"}
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, status, order_number FROM orders WHERE id = %s", (order_id,))
+        order = cur.fetchone()
+        if not order:
+            return {"error": "Order not found"}
+
+        current_status = order[1]
+        allowed = VALID_TRANSITIONS.get(current_status, [])
+        if new_status not in allowed:
+            return {"error": f"Cannot transition from '{current_status}' to '{new_status}'. Allowed: {', '.join(allowed) if allowed else 'none'}"}
+
+        if new_status == "confirmed":
+            _deduct_stock_for_order(cur, order_id, warehouse_id, user["user_id"])
+
+        cur.execute("UPDATE orders SET status = %s, updated_at = NOW() WHERE id = %s", (new_status, order_id))
+        cur.execute(
+            "INSERT INTO order_status_history (order_id, from_status, to_status, changed_by) VALUES (%s, %s, %s, %s) RETURNING id, created_at",
+            (order_id, current_status, new_status, user["user_id"]),
+        )
+        history_row = cur.fetchone()
+        conn.commit()
+
+        log_action(user["user_id"], "update_order_status", "orders", entity_id=order_id,
+                   details={"order_number": order[2], "from": current_status, "to": new_status})
+
+        result = {
+            "order_id": str(order[0]), "order_number": order[2],
+            "previous_status": current_status, "new_status": new_status,
+            "changed_at": str(history_row[1]),
+        }
+        if new_status == "confirmed":
+            result["stock_deducted"] = True
+        return result
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+def handle_order_cancel(args, user=None):
+    order_id = args.get("order_id")
+    confirmed = args.get("confirm", False)
+
+    if not order_id:
+        return {"error": "order_id is required"}
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, status, order_number, customer_name, total_amount FROM orders WHERE id = %s", (order_id,))
+        order = cur.fetchone()
+        if not order:
+            return {"error": "Order not found"}
+
+        current_status = order[1]
+        if current_status == "cancelled":
+            return {"error": "Order is already cancelled"}
+        if current_status == "delivered":
+            return {"error": "Cannot cancel a delivered order. Use returns instead."}
+
+        if not confirmed:
+            msg = f"Are you sure you want to cancel Order {order[2]} ({order[3]}, total ₹{order[4]})?"
+            if current_status == "confirmed":
+                msg += " Stock that was deducted will be restored."
+            return {
+                "confirmation_required": True, "message": msg,
+                "order_id": str(order[0]), "order_number": order[2],
+                "current_status": current_status,
+                "instruction": "Call again with confirm: true to proceed.",
+            }
+
+        if current_status == "confirmed":
+            _restore_stock_for_order(cur, order_id, user["user_id"])
+
+        cur.execute("UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = %s", (order_id,))
+        cur.execute(
+            "INSERT INTO order_status_history (order_id, from_status, to_status, changed_by) VALUES (%s, %s, 'cancelled', %s) RETURNING created_at",
+            (order_id, current_status, user["user_id"]),
+        )
+        history_row = cur.fetchone()
+        conn.commit()
+
+        log_action(user["user_id"], "cancel_order", "orders", entity_id=order_id,
+                   details={"order_number": order[2], "from": current_status, "stock_restored": current_status == "confirmed"})
+
+        result = {
+            "order_id": str(order[0]), "order_number": order[2],
+            "previous_status": current_status, "new_status": "cancelled",
+            "changed_at": str(history_row[0]),
+        }
+        if current_status == "confirmed":
+            result["stock_restored"] = True
+        return result
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+def handle_order_history(args, user=None):
+    order_id = args.get("order_id")
+    if not order_id:
+        return {"error": "order_id is required"}
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, order_number, status FROM orders WHERE id = %s", (order_id,))
+        order = cur.fetchone()
+        if not order:
+            return {"error": "Order not found"}
+
+        cur.execute(
+            """SELECT h.id, h.from_status, h.to_status, h.changed_by, u.full_name, h.created_at
+               FROM order_status_history h LEFT JOIN users u ON h.changed_by = u.id
+               WHERE h.order_id = %s ORDER BY h.created_at ASC""",
+            (order_id,),
+        )
+        rows = cur.fetchall()
+        return {
+            "order_id": str(order[0]), "order_number": order[1], "current_status": order[2],
+            "history": [{
+                "id": str(r[0]), "from_status": r[1], "to_status": r[2],
+                "changed_by": str(r[3]) if r[3] else None, "changed_by_name": r[4],
+                "created_at": str(r[5]),
+            } for r in rows],
+            "total_transitions": len(rows),
+        }
+    finally:
+        conn.close()
+
+
+# ── Invoice Handlers ───────────────────────────────────────────────────
+
+
+def _build_invoice_html(invoice_data, items, order):
+    items_html = ""
+    for i, item in enumerate(items, 1):
+        items_html += f"""
+        <tr>
+            <td>{i}</td>
+            <td>{item['product_name']}<br><small style="color:#666">{item['sku']}</small></td>
+            <td style="text-align:center">{item['quantity']}</td>
+            <td style="text-align:right">₹{item['unit_price']:.2f}</td>
+            <td style="text-align:right">₹{item['total_price']:.2f}</td>
+        </tr>"""
+
+    tax_row = ""
+    if invoice_data["tax_rate"] > 0:
+        tax_row = f"""
+        <tr>
+            <td colspan="4" style="text-align:right"><strong>GST ({invoice_data['tax_rate']}%)</strong></td>
+            <td style="text-align:right">₹{invoice_data['tax_amount']:.2f}</td>
+        </tr>"""
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Invoice {invoice_data['invoice_number']}</title>
+<style>
+body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 40px; color: #333; }}
+.header {{ display: flex; justify-content: space-between; margin-bottom: 30px; }}
+.company {{ font-size: 24px; font-weight: bold; color: #2563eb; }}
+.invoice-title {{ font-size: 28px; color: #1e293b; }}
+.meta {{ display: flex; justify-content: space-between; margin-bottom: 30px; }}
+.meta-block {{ background: #f8fafc; padding: 15px; border-radius: 8px; min-width: 200px; }}
+.meta-block h4 {{ margin: 0 0 8px 0; color: #64748b; font-size: 12px; text-transform: uppercase; }}
+table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
+th {{ background: #1e293b; color: white; padding: 12px; text-align: left; }}
+td {{ padding: 10px 12px; border-bottom: 1px solid #e2e8f0; }}
+.totals td {{ font-weight: bold; }}
+.footer {{ margin-top: 40px; text-align: center; color: #94a3b8; font-size: 12px; }}
+@media print {{ body {{ margin: 20px; }} }}
+</style></head><body>
+<div class="header"><div class="company">OmniDesk</div><div class="invoice-title">INVOICE</div></div>
+<div class="meta">
+    <div class="meta-block"><h4>Invoice Details</h4><p><strong>{invoice_data['invoice_number']}</strong></p><p>Date: {invoice_data['created_at']}</p><p>Due: {invoice_data['due_date'] or 'On receipt'}</p></div>
+    <div class="meta-block"><h4>Bill To</h4><p><strong>{order['customer_name']}</strong></p><p>{order.get('customer_email') or ''}</p><p>{order.get('customer_phone') or ''}</p></div>
+    <div class="meta-block"><h4>Order Reference</h4><p><strong>{order['order_number']}</strong></p><p>Status: {order['status']}</p></div>
+</div>
+<table><thead><tr><th>#</th><th>Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Amount</th></tr></thead>
+<tbody>{items_html}</tbody>
+<tfoot class="totals">
+    <tr><td colspan="4" style="text-align:right"><strong>Subtotal</strong></td><td style="text-align:right">₹{invoice_data['subtotal']:.2f}</td></tr>
+    {tax_row}
+    <tr style="font-size:18px"><td colspan="4" style="text-align:right"><strong>Total</strong></td><td style="text-align:right"><strong>₹{invoice_data['total_amount']:.2f}</strong></td></tr>
+</tfoot></table>
+<div class="footer"><p>Generated by OmniDesk</p></div>
+</body></html>"""
+
+
+def handle_invoice_generate(args, user=None):
+    order_id = args.get("order_id")
+    tax_rate = args.get("tax_rate", 0)
+    due_date = args.get("due_date")
+
+    if not order_id:
+        return {"error": "order_id is required"}
+    try:
+        tax_rate = float(tax_rate)
+        if tax_rate < 0 or tax_rate > 100:
+            raise ValueError
+    except (ValueError, TypeError):
+        return {"error": "tax_rate must be between 0 and 100"}
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT id, order_number, customer_name, customer_email, customer_phone, status, subtotal
+               FROM orders WHERE id = %s""",
+            (order_id,),
+        )
+        order = cur.fetchone()
+        if not order:
+            return {"error": "Order not found"}
+
+        order_data = {"order_number": order[1], "customer_name": order[2], "customer_email": order[3], "customer_phone": order[4], "status": order[5]}
+
+        cur.execute("SELECT id, invoice_number FROM invoices WHERE order_id = %s", (order_id,))
+        existing = cur.fetchone()
+        if existing:
+            return {"error": f"Invoice {existing[1]} already exists for this order"}
+
+        cur.execute(
+            """SELECT oi.product_id, p.name, p.sku, oi.quantity, oi.unit_price, oi.total_price
+               FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = %s""",
+            (order_id,),
+        )
+        items = [{"product_id": str(r[0]), "product_name": r[1], "sku": r[2], "quantity": r[3], "unit_price": float(r[4]), "total_price": float(r[5])} for r in cur.fetchall()]
+        if not items:
+            return {"error": "Order has no items"}
+
+        subtotal = sum(item["total_price"] for item in items)
+        tax_amount = round(subtotal * tax_rate / 100, 2)
+        total_amount = round(subtotal + tax_amount, 2)
+
+        invoice_number = _generate_number("INV")
+        for _ in range(5):
+            cur.execute("SELECT id FROM invoices WHERE invoice_number = %s", (invoice_number,))
+            if not cur.fetchone():
+                break
+            invoice_number = _generate_number("INV")
+
+        if not due_date:
+            due_date = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
+
+        created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        invoice_data = {"invoice_number": invoice_number, "subtotal": subtotal, "tax_rate": tax_rate, "tax_amount": tax_amount, "total_amount": total_amount, "due_date": due_date, "created_at": created_at}
+
+        html_content = _build_invoice_html(invoice_data, items, order_data)
+        s3_key = f"invoices/{invoice_number}.html"
+        s3_bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.put_object(Bucket=s3_bucket, Key=s3_key, Body=html_content.encode("utf-8"), ContentType="text/html")
+
+        cur.execute(
+            """INSERT INTO invoices (invoice_number, order_id, pdf_s3_key, subtotal, tax_rate, tax_amount, total_amount, payment_status, status, due_date, created_by)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, 'unpaid', 'generated', %s, %s) RETURNING id, created_at""",
+            (invoice_number, order_id, s3_key, subtotal, tax_rate, tax_amount, total_amount, due_date, user["user_id"]),
+        )
+        inv_row = cur.fetchone()
+        conn.commit()
+
+        log_action(user["user_id"], "generate_invoice", "invoices", entity_id=str(inv_row[0]),
+                   details={"invoice_number": invoice_number, "order_number": order_data["order_number"], "total": str(total_amount)})
+
+        return {
+            "id": str(inv_row[0]), "invoice_number": invoice_number,
+            "order_id": str(order_id), "order_number": order_data["order_number"],
+            "customer_name": order_data["customer_name"],
+            "subtotal": str(subtotal), "tax_rate": str(tax_rate),
+            "tax_amount": str(tax_amount), "total_amount": str(total_amount),
+            "payment_status": "unpaid", "status": "generated",
+            "due_date": due_date, "created_at": str(inv_row[1]),
+        }
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+def handle_invoice_list(args, user=None):
+    page = max(int(args.get("page", 1)), 1)
+    limit = min(max(int(args.get("limit", 20)), 1), 100)
+    offset = (page - 1) * limit
+    payment_status = (args.get("payment_status") or "").strip().lower() or None
+    from_date = args.get("from_date")
+    to_date = args.get("to_date")
+    search = (args.get("search") or "").strip()
+
+    conditions = []
+    params = []
+    if payment_status:
+        conditions.append("i.payment_status = %s")
+        params.append(payment_status)
+    if from_date:
+        conditions.append("i.created_at >= %s")
+        params.append(from_date)
+    if to_date:
+        conditions.append("i.created_at <= %s")
+        params.append(to_date)
+    if search:
+        conditions.append("(i.invoice_number ILIKE %s OR o.customer_name ILIKE %s OR o.order_number ILIKE %s)")
+        params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
+
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM invoices i JOIN orders o ON i.order_id = o.id {where}", params)
+        total = cur.fetchone()[0]
+        cur.execute(
+            f"""SELECT i.id, i.invoice_number, o.order_number, o.customer_name,
+                       i.total_amount, i.payment_status, i.status, i.due_date, i.created_at
+                FROM invoices i JOIN orders o ON i.order_id = o.id {where}
+                ORDER BY i.created_at DESC LIMIT %s OFFSET %s""",
+            params + [limit, offset],
+        )
+        rows = cur.fetchall()
+        return {
+            "invoices": [{
+                "id": str(r[0]), "invoice_number": r[1], "order_number": r[2],
+                "customer_name": r[3], "total_amount": str(r[4]),
+                "payment_status": r[5], "status": r[6],
+                "due_date": str(r[7]) if r[7] else None, "created_at": str(r[8]),
+            } for r in rows],
+            "total": total, "page": page, "limit": limit,
+        }
+    finally:
+        conn.close()
+
+
+def handle_invoice_get(args, user=None):
+    invoice_id = args.get("invoice_id")
+    if not invoice_id:
+        return {"error": "invoice_id is required"}
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT i.id, i.invoice_number, i.order_id, o.order_number, o.customer_name,
+                      o.customer_email, i.subtotal, i.tax_rate, i.tax_amount, i.total_amount,
+                      i.payment_status, i.status, i.due_date, i.sent_at, i.created_by, i.created_at
+               FROM invoices i JOIN orders o ON i.order_id = o.id WHERE i.id = %s""",
+            (invoice_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"error": "Invoice not found"}
+        return {
+            "id": str(row[0]), "invoice_number": row[1],
+            "order_id": str(row[2]), "order_number": row[3],
+            "customer_name": row[4], "customer_email": row[5],
+            "subtotal": str(row[6]), "tax_rate": str(row[7]),
+            "tax_amount": str(row[8]), "total_amount": str(row[9]),
+            "payment_status": row[10], "status": row[11],
+            "due_date": str(row[12]) if row[12] else None,
+            "sent_at": str(row[13]) if row[13] else None,
+            "created_by": str(row[14]), "created_at": str(row[15]),
+        }
+    finally:
+        conn.close()
+
+
+def handle_invoice_download(args, user=None):
+    invoice_id = args.get("invoice_id")
+    if not invoice_id:
+        return {"error": "invoice_id is required"}
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, invoice_number, pdf_s3_key FROM invoices WHERE id = %s", (invoice_id,))
+        row = cur.fetchone()
+        if not row:
+            return {"error": "Invoice not found"}
+        if not row[2]:
+            return {"error": "Invoice file not found. Regenerate the invoice."}
+
+        s3 = boto3.client("s3", region_name="us-east-1")
+        bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
+        url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": row[2]}, ExpiresIn=900)
+        return {"invoice_id": str(row[0]), "invoice_number": row[1], "download_url": url, "expires_in": "15 minutes"}
+    finally:
+        conn.close()
+
+
+def handle_invoice_send(args, user=None):
+    invoice_id = args.get("invoice_id")
+    if not invoice_id:
+        return {"error": "invoice_id is required"}
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT i.id, i.invoice_number, i.pdf_s3_key, o.customer_name, o.customer_email
+               FROM invoices i JOIN orders o ON i.order_id = o.id WHERE i.id = %s""",
+            (invoice_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"error": "Invoice not found"}
+        if not row[2]:
+            return {"error": "Invoice file not found. Generate the invoice first."}
+
+        s3 = boto3.client("s3", region_name="us-east-1")
+        bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
+        url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": row[2]}, ExpiresIn=86400)
+
+        now = datetime.now(timezone.utc)
+        cur.execute("UPDATE invoices SET sent_at = %s, status = 'sent' WHERE id = %s", (now, invoice_id))
+        conn.commit()
+
+        log_action(user["user_id"], "send_invoice", "invoices", entity_id=invoice_id,
+                   details={"invoice_number": row[1], "customer_email": row[4]})
+
+        result = {
+            "invoice_id": str(row[0]), "invoice_number": row[1],
+            "customer_name": row[3], "download_url": url,
+            "status": "sent", "sent_at": str(now),
+        }
+        if row[4]:
+            result["customer_email"] = row[4]
+            result["email_note"] = "Email delivery available when SES is configured (Phase 4). Share the download link for now."
+        else:
+            result["email_note"] = "No customer email on file. Share the download link directly."
+        return result
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
 TOOL_HANDLERS = {
     "omnidesk_start": handle_omnidesk_start,
     "omnidesk_help": handle_omnidesk_help,
@@ -1026,6 +1987,17 @@ TOOL_HANDLERS = {
     "stock_adjust": handle_stock_adjust,
     "stock_low_alerts": handle_stock_low_alerts,
     "stock_movements": handle_stock_movements,
+    "order_create": handle_order_create,
+    "order_list": handle_order_list,
+    "order_get": handle_order_get,
+    "order_update_status": handle_order_update_status,
+    "order_cancel": handle_order_cancel,
+    "order_history": handle_order_history,
+    "invoice_generate": handle_invoice_generate,
+    "invoice_list": handle_invoice_list,
+    "invoice_get": handle_invoice_get,
+    "invoice_download": handle_invoice_download,
+    "invoice_send": handle_invoice_send,
 }
 
 # ── JSON-RPC Helpers ────────────────────────────────────────────────────
@@ -1050,11 +2022,51 @@ def jsonrpc_error(req_id, code, message):
 
 
 def extract_user_from_headers(event):
-    """Extract JWT user from Authorization header set by mcp-remote."""
+    """Extract JWT user from Authorization header.
+
+    Handles multiple header formats:
+      - mcp-remote: Authorization: Bearer <token>
+      - Claude.ai Connectors: may lowercase headers or use different casing
+      - Query param fallback: ?token=<jwt>
+    """
     headers = event.get("headers") or {}
-    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+
+    # Try all common header casings
+    auth_header = ""
+    for key in ("Authorization", "authorization", "AUTHORIZATION"):
+        if key in headers:
+            auth_header = headers[key]
+            break
+
+    # If not found, search case-insensitively
+    if not auth_header:
+        for key, value in headers.items():
+            if key.lower() == "authorization":
+                auth_header = value
+                break
+
+    # Extract token from "Bearer <token>" format
     if auth_header.startswith("Bearer "):
         return verify_token(auth_header[7:], expected_type="access")
+    if auth_header.startswith("bearer "):
+        return verify_token(auth_header[7:], expected_type="access")
+
+    # If auth header has a raw JWT (no Bearer prefix), try it directly
+    if auth_header and auth_header.count(".") == 2:
+        return verify_token(auth_header, expected_type="access")
+
+    # Fallback: check query string params (useful for testing)
+    qsp = event.get("queryStringParameters") or {}
+    token = qsp.get("token")
+    if token:
+        return verify_token(token, expected_type="access")
+
+    # Log headers for debugging (redact sensitive values)
+    import logging
+    logger = logging.getLogger()
+    header_keys = list(headers.keys()) if headers else []
+    logger.info(f"MCP auth failed. Header keys present: {header_keys}")
+
     return None
 
 
@@ -1062,7 +2074,16 @@ def extract_user_from_headers(event):
 
 
 def lambda_handler(event, context):
+    import logging
+    logger = logging.getLogger()
+    logger.setLevel(logging.INFO)
+
     method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method", "")
+    headers = event.get("headers") or {}
+    body_raw = event.get("body") or ""
+
+    # Log every request for debugging connector issues
+    logger.info(f"MCP REQUEST: method={method}, header_keys={list(headers.keys())}, body_preview={str(body_raw)[:200]}")
 
     if method == "OPTIONS":
         return {"statusCode": 204, "headers": CORS_HEADERS, "body": ""}

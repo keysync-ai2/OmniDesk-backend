@@ -41,6 +41,16 @@ export AWS_CONFIG_FILE=/Users/dhruvsharma/Documents/Research/OmniDesk/.aws/confi
 | `/api/stock/adjust` | `qtek0v` | POST | `omnidesk-stock-adjust` |
 | `/api/stock/low` | `h7113j` | GET | `omnidesk-stock-low` |
 | `/api/stock/movements/{product_id}` | `7a580d` | GET | `omnidesk-stock-movements` |
+| `/api/orders` | `2kb04v` | GET, POST | `omnidesk-order-list`, `omnidesk-order-create` |
+| `/api/orders/{id}` | `77og89` | GET | `omnidesk-order-list` |
+| `/api/orders/{id}/status` | `myuovk` | PATCH | `omnidesk-order-status` |
+| `/api/orders/{id}/cancel` | `e7f2t5` | PATCH | `omnidesk-order-status` |
+| `/api/orders/{id}/history` | `mkijtc` | GET | `omnidesk-order-history` |
+| `/api/invoices` | `3z1dmg` | GET | `omnidesk-invoice-list` |
+| `/api/invoices/generate` | `bvwzh1` | POST | `omnidesk-invoice-generate` |
+| `/api/invoices/{id}` | `zr0sbx` | GET | `omnidesk-invoice-list` |
+| `/api/invoices/{id}/download` | `082e7p` | GET | `omnidesk-invoice-download` |
+| `/api/invoices/{id}/send` | `305q12` | POST | `omnidesk-invoice-send` |
 | `/api` | `bdbaw3` | — | — |
 | `/api/auth` | `xcx7sm` | — | — |
 | `/api/stock` | `pbghbw` | — | — |

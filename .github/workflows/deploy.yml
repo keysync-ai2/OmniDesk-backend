@@ -62,6 +62,18 @@ jobs:
           package "stock-low" "lambdas/stock/low_alerts.py"
           package "stock-movements" "lambdas/stock/movements.py"
 
+          # Orders
+          package "order-create" "lambdas/orders/create.py"
+          package "order-list" "lambdas/orders/list_get.py"
+          package "order-status" "lambdas/orders/update_status.py"
+          package "order-history" "lambdas/orders/history.py"
+
+          # Invoices
+          package "invoice-generate" "lambdas/invoices/generate.py"
+          package "invoice-list" "lambdas/invoices/list_get.py"
+          package "invoice-download" "lambdas/invoices/download.py"
+          package "invoice-send" "lambdas/invoices/send.py"
+
       # Deploy all functions
       - name: Deploy all Lambdas
         run: |
@@ -86,3 +98,11 @@ jobs:
           deploy stock-adjust
           deploy stock-low
           deploy stock-movements
+          deploy order-create
+          deploy order-list
+          deploy order-status
+          deploy order-history
+          deploy invoice-generate
+          deploy invoice-list
+          deploy invoice-download
+          deploy invoice-send
