@@ -51,6 +51,14 @@ export AWS_CONFIG_FILE=/Users/dhruvsharma/Documents/Research/OmniDesk/.aws/confi
 | `/api/invoices/{id}` | `zr0sbx` | GET | `omnidesk-invoice-list` |
 | `/api/invoices/{id}/download` | `082e7p` | GET | `omnidesk-invoice-download` |
 | `/api/invoices/{id}/send` | `305q12` | POST | `omnidesk-invoice-send` |
+| `/api/reports` | `tao65w` | GET | `omnidesk-report-list` |
+| `/api/reports/generate` | `i4lnpq` | POST | `omnidesk-report-generate` |
+| `/api/reports/{id}` | `3eezvh` | GET | `omnidesk-report-list` |
+| `/api/forms` | `agy1m7` | GET, POST | `omnidesk-form-create` |
+| `/api/forms/{id}` | `aygobk` | GET | `omnidesk-form-create` |
+| `/api/forms/{id}/submit` | `4kubgm` | POST | `omnidesk-form-submit` |
+| `/api/forms/{id}/submissions` | `cqrfvm` | GET | `omnidesk-form-submissions` |
+| `/api/forms/{id}/submissions/{sub_id}` | `x58i8q` | GET | `omnidesk-form-submissions` |
 | `/api` | `bdbaw3` | — | — |
 | `/api/auth` | `xcx7sm` | — | — |
 | `/api/stock` | `pbghbw` | — | — |
@@ -74,6 +82,7 @@ JWT_SECRET_ARN     = omnidesk/jwt-secret
 S3_BUCKET          = omnidesk-files-577397739686
 AUDIT_TABLE        = omnidesk-audit-log
 PINECONE_SECRET_ARN = omnidesk/pinecone    # product-create, product-update, product-search, mcp-server
+FORM_SUBMISSIONS_TABLE = omnidesk-form-submissions  # form-submit, form-submissions, mcp-server
 ```
 
 ---

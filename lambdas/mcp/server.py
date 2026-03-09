@@ -20,6 +20,8 @@ from utils.db import get_connection
 from utils.jwt_helper import verify_token
 from utils.audit import log_action
 from utils.pdf_builder import build_invoice_pdf
+from utils.report_builder import build_report_html
+from utils.form_builder import build_form_html
 
 SERVER_INFO = {
     "name": "omnidesk-mcp",
@@ -52,7 +54,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "module": {"type": "string", "enum": ["all", "products", "stock", "categories", "warehouses", "orders", "invoices", "auth"], "description": "Filter help by module (default: all)"},
+                "module": {"type": "string", "enum": ["all", "products", "stock", "categories", "warehouses", "orders", "invoices", "reports", "forms", "auth"], "description": "Filter help by module (default: all)"},
             },
         },
     },
@@ -407,6 +409,109 @@ TOOLS = [
             "required": ["settings"],
         },
     },
+    # ── Reports ──────────────────────────────────────────────────────
+    {
+        "name": "report_generate",
+        "description": "Generate a professional HTML report with charts. Supported types: sales, stock, invoice_summary. Reports include markdown tables + Chart.js visualizations, hosted on S3. Example: 'Generate a sales report for the last 30 days'. Requires manager role.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "report_type": {"type": "string", "enum": ["sales", "stock", "invoice_summary"], "description": "Type of report to generate"},
+                "from_date": {"type": "string", "description": "Start date YYYY-MM-DD (default: 30 days ago)"},
+                "to_date": {"type": "string", "description": "End date YYYY-MM-DD (default: today)"},
+                "filters": {"type": "object", "description": "Optional filters (e.g. category_id for sales, warehouse_id for stock)"},
+            },
+            "required": ["report_type"],
+        },
+    },
+    {
+        "name": "report_list",
+        "description": "List previously generated reports with pagination. Filter by report type. Example: 'Show me all stock reports'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "report_type": {"type": "string", "enum": ["sales", "stock", "invoice_summary"], "description": "Filter by report type"},
+                "page": {"type": "integer", "description": "Page number (default 1)"},
+                "limit": {"type": "integer", "description": "Items per page (default 20)"},
+            },
+        },
+    },
+    {
+        "name": "report_get",
+        "description": "Get a single report with a fresh download URL (15-minute expiry).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "report_id": {"type": "string", "description": "Report UUID"},
+            },
+            "required": ["report_id"],
+        },
+    },
+    # ── Forms ────────────────────────────────────────────────────────
+    {
+        "name": "form_create",
+        "description": "Create a dynamic online form with professional theme, hosted on S3. Define fields (text, email, phone, number, date, select, radio, checkbox, textarea, file) and get a shareable URL. Example: 'Create a customer feedback form with name, email, rating, and comments'. Requires manager role.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Form name/title"},
+                "description": {"type": "string", "description": "Form description (supports markdown)"},
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "Field name (used as key in submission data)"},
+                            "type": {"type": "string", "enum": ["text", "email", "phone", "number", "date", "url", "select", "radio", "checkbox", "textarea", "file"], "description": "Field type"},
+                            "label": {"type": "string", "description": "Display label (auto-generated from name if omitted)"},
+                            "required": {"type": "boolean", "description": "Is this field required?"},
+                            "placeholder": {"type": "string", "description": "Placeholder text"},
+                            "options": {"type": "array", "items": {"type": "string"}, "description": "Options for select/radio/checkbox fields"},
+                            "hint": {"type": "string", "description": "Helper text shown below the field"},
+                        },
+                        "required": ["name"],
+                    },
+                    "description": "List of form field definitions",
+                },
+                "theme": {"type": "string", "enum": ["default", "dark", "green", "red", "orange"], "description": "Form theme (default: blue)"},
+            },
+            "required": ["name", "fields"],
+        },
+    },
+    {
+        "name": "form_list",
+        "description": "List all active forms with shareable URLs. Example: 'Show me all forms'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "page": {"type": "integer", "description": "Page number (default 1)"},
+                "limit": {"type": "integer", "description": "Items per page (default 20)"},
+            },
+        },
+    },
+    {
+        "name": "form_get",
+        "description": "Get a single form definition with field schema and shareable URL.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "form_id": {"type": "string", "description": "Form UUID"},
+            },
+            "required": ["form_id"],
+        },
+    },
+    {
+        "name": "form_submissions",
+        "description": "List all submissions for a form. Shows submitted data, timestamps, and metadata. Example: 'Show submissions for the feedback form'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "form_id": {"type": "string", "description": "Form UUID"},
+                "limit": {"type": "integer", "description": "Max results (default 50, max 100)"},
+            },
+            "required": ["form_id"],
+        },
+    },
 ]
 
 # ── RBAC ───────────────────────────────────────────────────────────────
@@ -445,6 +550,13 @@ TOOL_ROLES = {
     "invoice_send": "manager",
     "org_settings_get": "viewer",
     "org_settings_update": "admin",
+    "report_generate": "manager",
+    "report_list": "viewer",
+    "report_get": "viewer",
+    "form_create": "manager",
+    "form_list": "viewer",
+    "form_get": "viewer",
+    "form_submissions": "viewer",
 }
 
 
@@ -672,6 +784,30 @@ def handle_omnidesk_help(args, user=None):
                     "example": "Download this invoice"},
                 {"command": "invoice_send",
                     "description": "Send invoice to customer (manager+)", "example": "Send this invoice to the customer"},
+            ],
+        },
+        "reports": {
+            "title": "Reports",
+            "tools": [
+                {"command": "report_generate",
+                    "description": "Generate sales/stock/invoice report (manager+)", "example": "Generate a sales report for March"},
+                {"command": "report_list", "description": "List generated reports",
+                    "example": "Show me all reports"},
+                {"command": "report_get", "description": "Get report with download link",
+                    "example": "Show report RPT-20260310-A1B2"},
+            ],
+        },
+        "forms": {
+            "title": "Online Forms",
+            "tools": [
+                {"command": "form_create",
+                    "description": "Create a dynamic form (manager+)", "example": "Create a customer feedback form"},
+                {"command": "form_list", "description": "List all forms",
+                    "example": "Show me all forms"},
+                {"command": "form_get", "description": "Get form details and URL",
+                    "example": "Show details of the feedback form"},
+                {"command": "form_submissions", "description": "View form submissions",
+                    "example": "Show submissions for the feedback form"},
             ],
         },
     }
@@ -2175,6 +2311,515 @@ def handle_org_settings_update(args, user=None):
         conn.close()
 
 
+# ── Report Handlers ──────────────────────────────────────────────────
+
+
+def handle_report_generate(args, user=None):
+    """Generate a report, upload to S3, return URL."""
+    from datetime import timedelta
+    report_type = (args.get("report_type") or "").strip().lower()
+    valid_types = {"sales", "stock", "invoice_summary"}
+    if report_type not in valid_types:
+        return {"error": f"Invalid report_type. Must be one of: {', '.join(valid_types)}"}
+
+    to_date = args.get("to_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    from_date = args.get("from_date") or (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    filters = args.get("filters") or {}
+
+    S3_BUCKET = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
+    s3_client = boto3.client("s3", region_name="us-east-1")
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        # Import report builders inline to keep MCP server self-contained
+        md, charts, subtitle = _build_mcp_report(cur, report_type, from_date, to_date, filters)
+
+        title = f"{report_type.replace('_', ' ').title()} Report"
+        html = build_report_html(title, md, charts, subtitle)
+
+        # Upload to S3
+        date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
+        rand_part = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+        report_number = f"RPT-{date_part}-{rand_part}"
+        s3_key = f"reports/{report_number}.html"
+
+        s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=html.encode("utf-8"), ContentType="text/html")
+        url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": s3_key}, ExpiresIn=900)
+
+        # Save to DB
+        cur.execute(
+            """INSERT INTO reports (title, report_type, s3_key, source_module, filters, generated_by)
+               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, created_at""",
+            (f"{title} — {from_date} to {to_date}", report_type, s3_key,
+             report_type, json.dumps({"from_date": from_date, "to_date": to_date, **filters}),
+             user["user_id"]),
+        )
+        row = cur.fetchone()
+        conn.commit()
+
+        log_action(user["user_id"], "generate_report", "reports",
+                   entity_id=str(row[0]), details={"report_type": report_type})
+
+        return {
+            "id": str(row[0]),
+            "report_number": report_number,
+            "title": title,
+            "report_type": report_type,
+            "from_date": from_date,
+            "to_date": to_date,
+            "url": url,
+            "created_at": str(row[1]),
+            "message": f"Report generated successfully. [View Report]({url})",
+        }
+    except Exception as e:
+        conn.rollback()
+        return {"error": f"Failed to generate report: {str(e)}"}
+    finally:
+        conn.close()
+
+
+def _build_mcp_report(cur, report_type, from_date, to_date, filters):
+    """Build report markdown + charts for MCP handler."""
+    if report_type == "sales":
+        return _build_mcp_sales(cur, from_date, to_date, filters)
+    elif report_type == "stock":
+        return _build_mcp_stock(cur, from_date, to_date, filters)
+    elif report_type == "invoice_summary":
+        return _build_mcp_invoice(cur, from_date, to_date, filters)
+    return "No data", [], ""
+
+
+def _build_mcp_sales(cur, from_date, to_date, filters):
+    cur.execute(
+        """SELECT COUNT(*), COALESCE(SUM(total_amount), 0)
+           FROM orders WHERE status != 'cancelled'
+           AND created_at >= %s AND created_at < %s""",
+        (from_date, to_date),
+    )
+    order_count, total_revenue = cur.fetchone()
+
+    cur.execute(
+        """SELECT p.name, p.sku, SUM(oi.quantity) as qty, SUM(oi.total_price) as rev
+           FROM order_items oi JOIN orders o ON oi.order_id = o.id
+           JOIN products p ON oi.product_id = p.id
+           WHERE o.status != 'cancelled' AND o.created_at >= %s AND o.created_at < %s
+           GROUP BY p.id, p.name, p.sku ORDER BY rev DESC LIMIT 5""",
+        (from_date, to_date),
+    )
+    top_products = cur.fetchall()
+
+    cur.execute(
+        """SELECT DATE(created_at) as day, COUNT(*), COALESCE(SUM(total_amount), 0)
+           FROM orders WHERE status != 'cancelled'
+           AND created_at >= %s AND created_at < %s
+           GROUP BY DATE(created_at) ORDER BY day""",
+        (from_date, to_date),
+    )
+    daily = cur.fetchall()
+
+    md = f"""# Sales Summary
+
+| Metric | Value |
+|--------|-------|
+| **Total Orders** | {order_count} |
+| **Total Revenue** | Rs. {total_revenue:,.2f} |
+| **Period** | {from_date} to {to_date} |
+
+# Top 5 Products by Revenue
+
+"""
+    if top_products:
+        md += "| # | Product | SKU | Qty Sold | Revenue |\n|---|---------|-----|----------|---------|\\n"
+        for i, (name, sku, qty, rev) in enumerate(top_products, 1):
+            md += f"| {i} | {name} | {sku} | {qty} | Rs. {rev:,.2f} |\\n"
+    else:
+        md += "> No sales data for this period.\\n"
+
+    charts = []
+    if daily:
+        charts.append({
+            "id": "daily-revenue-chart", "type": "line",
+            "data": {
+                "labels": [str(d[0]) for d in daily],
+                "datasets": [{"label": "Daily Revenue (Rs.)", "data": [float(d[2]) for d in daily],
+                              "borderColor": "#1a73e8", "backgroundColor": "rgba(26,115,232,0.1)", "fill": True, "tension": 0.3}],
+            },
+            "options": {"responsive": True, "plugins": {"title": {"display": True, "text": "Daily Revenue Trend"}}},
+        })
+    if top_products:
+        charts.append({
+            "id": "top-products-chart", "type": "bar",
+            "data": {
+                "labels": [p[0][:20] for p in top_products],
+                "datasets": [{"label": "Revenue (Rs.)", "data": [float(p[3]) for p in top_products],
+                              "backgroundColor": ["#1a73e8", "#34a853", "#fbbc04", "#ea4335", "#9334e6"]}],
+            },
+            "options": {"responsive": True, "plugins": {"title": {"display": True, "text": "Top 5 Products by Revenue"}}},
+        })
+
+    return md, charts, f"Sales Report • {from_date} to {to_date}"
+
+
+def _build_mcp_stock(cur, from_date, to_date, filters):
+    warehouse_id = filters.get("warehouse_id")
+    wh_filter = "AND s.warehouse_id = %s" if warehouse_id else ""
+    wh_params = [warehouse_id] if warehouse_id else []
+
+    cur.execute(
+        f"""SELECT p.name, p.sku, s.quantity, s.low_stock_threshold, w.name as wh_name
+            FROM stock s JOIN products p ON s.product_id = p.id
+            LEFT JOIN warehouses w ON s.warehouse_id = w.id
+            WHERE p.is_active = TRUE {wh_filter}
+            ORDER BY s.quantity ASC LIMIT 50""",
+        wh_params,
+    )
+    stock_rows = cur.fetchall()
+
+    cur.execute(
+        f"""SELECT COUNT(*) FROM stock s JOIN products p ON s.product_id = p.id
+            WHERE p.is_active = TRUE AND s.quantity < s.low_stock_threshold {wh_filter}""",
+        wh_params,
+    )
+    low_stock_count = cur.fetchone()[0]
+
+    cur.execute(
+        f"SELECT COUNT(*), COALESCE(SUM(quantity), 0) FROM stock s WHERE 1=1 {wh_filter}",
+        wh_params,
+    )
+    total_entries, total_qty = cur.fetchone()
+
+    md = f"""# Stock Summary
+
+| Metric | Value |
+|--------|-------|
+| **Total Stock Entries** | {total_entries} |
+| **Total Units** | {total_qty:,} |
+| **Low Stock Alerts** | {low_stock_count} |
+
+# Stock Levels
+
+| Product | SKU | Quantity | Threshold | Warehouse | Status |
+|---------|-----|----------|-----------|-----------|--------|
+"""
+    healthy, low, critical = 0, 0, 0
+    for name, sku, qty, threshold, wh in stock_rows:
+        if qty < threshold:
+            if qty == 0:
+                status, critical = "Critical", critical + 1
+            else:
+                status, low = "Low", low + 1
+        else:
+            status, healthy = "OK", healthy + 1
+        md += f"| {name} | {sku} | {qty} | {threshold} | {wh or '-'} | {status} |\\n"
+
+    charts = []
+    if stock_rows:
+        charts.append({
+            "id": "stock-status-chart", "type": "doughnut",
+            "data": {"labels": ["Healthy", "Low", "Critical"],
+                     "datasets": [{"data": [healthy, low, critical], "backgroundColor": ["#34a853", "#fbbc04", "#ea4335"]}]},
+            "options": {"responsive": True, "plugins": {"title": {"display": True, "text": "Stock Health Distribution"}}},
+        })
+
+    return md, charts, "Stock Report"
+
+
+def _build_mcp_invoice(cur, from_date, to_date, filters):
+    cur.execute(
+        """SELECT payment_status, COUNT(*), COALESCE(SUM(total_amount), 0)
+           FROM invoices WHERE 1=1
+           AND created_at >= %s AND created_at < %s
+           GROUP BY payment_status""",
+        (from_date, to_date),
+    )
+    status_rows = cur.fetchall()
+    total_invoices = sum(r[1] for r in status_rows)
+    total_amount = sum(r[2] for r in status_rows)
+
+    md = f"""# Invoice Summary
+
+| Metric | Value |
+|--------|-------|
+| **Total Invoices** | {total_invoices} |
+| **Total Amount** | Rs. {total_amount:,.2f} |
+| **Period** | {from_date} to {to_date} |
+
+# Payment Status Breakdown
+
+| Status | Count | Amount |
+|--------|-------|--------|
+"""
+    for status, count, amount in status_rows:
+        md += f"| {status.title()} | {count} | Rs. {amount:,.2f} |\\n"
+
+    charts = []
+    if status_rows:
+        charts.append({
+            "id": "payment-status-chart", "type": "doughnut",
+            "data": {"labels": [r[0].title() for r in status_rows],
+                     "datasets": [{"data": [float(r[2]) for r in status_rows],
+                                   "backgroundColor": ["#34a853", "#ea4335", "#fbbc04", "#9334e6"]}]},
+            "options": {"responsive": True, "plugins": {"title": {"display": True, "text": "Invoice Amount by Payment Status"}}},
+        })
+
+    return md, charts, f"Invoice Summary • {from_date} to {to_date}"
+
+
+def handle_report_list(args, user=None):
+    """List generated reports."""
+    page = max(int(args.get("page", 1)), 1)
+    limit = min(max(int(args.get("limit", 20)), 1), 100)
+    offset = (page - 1) * limit
+    report_type = args.get("report_type")
+
+    conditions = ["is_active = TRUE"]
+    params = []
+    if report_type:
+        conditions.append("report_type = %s")
+        params.append(report_type)
+    where = " AND ".join(conditions)
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT COUNT(*) FROM reports WHERE {where}", params)
+        total = cur.fetchone()[0]
+
+        cur.execute(
+            f"""SELECT id, title, report_type, s3_key, created_at
+                FROM reports WHERE {where}
+                ORDER BY created_at DESC LIMIT %s OFFSET %s""",
+            params + [limit, offset],
+        )
+        rows = cur.fetchall()
+        return {
+            "reports": [{"id": str(r[0]), "title": r[1], "report_type": r[2], "s3_key": r[3], "created_at": str(r[4])} for r in rows],
+            "total": total, "page": page, "limit": limit,
+        }
+    finally:
+        conn.close()
+
+
+def handle_report_get(args, user=None):
+    """Get single report with fresh presigned URL."""
+    report_id = args.get("report_id")
+    if not report_id:
+        return {"error": "report_id is required"}
+
+    S3_BUCKET = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
+    s3_client = boto3.client("s3", region_name="us-east-1")
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT id, title, report_type, s3_key, source_module, filters, generated_by, is_active, created_at
+               FROM reports WHERE id = %s""",
+            (report_id,),
+        )
+        r = cur.fetchone()
+        if not r:
+            return {"error": "Report not found"}
+        if not r[7]:
+            return {"error": "Report has been deleted"}
+
+        url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": r[3]}, ExpiresIn=900)
+        return {
+            "id": str(r[0]), "title": r[1], "report_type": r[2], "s3_key": r[3],
+            "source_module": r[4],
+            "filters": r[5] if isinstance(r[5], dict) else json.loads(r[5] or "{}"),
+            "generated_by": str(r[6]) if r[6] else None,
+            "url": url, "created_at": str(r[8]),
+            "message": f"[View Report]({url})",
+        }
+    finally:
+        conn.close()
+
+
+# ── Form Handlers ────────────────────────────────────────────────────
+
+
+def handle_form_create(args, user=None):
+    """Create a form definition + generate hosted HTML on S3."""
+    name = (args.get("name") or "").strip()
+    description = (args.get("description") or "").strip() or None
+    fields = args.get("fields") or []
+    theme = (args.get("theme") or "default").strip().lower()
+
+    if not name:
+        return {"error": "Form name is required"}
+    if not fields:
+        return {"error": "At least one field is required"}
+
+    valid_types = {"text", "email", "phone", "number", "date", "url", "select", "radio", "checkbox", "textarea", "file"}
+    for f in fields:
+        if not f.get("name"):
+            return {"error": "Each field must have a 'name'"}
+        if f.get("type") and f["type"] not in valid_types:
+            return {"error": f"Invalid field type '{f['type']}'. Valid: {', '.join(sorted(valid_types))}"}
+
+    S3_BUCKET = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
+    API_BASE = "https://zak2w9nuuh.execute-api.us-east-1.amazonaws.com/dev"
+    s3_client = boto3.client("s3", region_name="us-east-1")
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO forms (name, description, schema_json, theme, created_by)
+               VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at""",
+            (name, description, json.dumps(fields), theme, user["user_id"]),
+        )
+        row = cur.fetchone()
+        form_id = str(row[0])
+
+        submit_url = f"{API_BASE}/api/forms/{form_id}/submit"
+        html = build_form_html(name, description, fields, submit_url, theme)
+
+        s3_key = f"forms/{form_id}/form.html"
+        s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=html.encode("utf-8"), ContentType="text/html")
+        s3_url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": s3_key}, ExpiresIn=604800)
+
+        cur.execute("UPDATE forms SET s3_url = %s WHERE id = %s", (s3_key, form_id))
+        conn.commit()
+
+        log_action(user["user_id"], "create_form", "forms",
+                   entity_id=form_id, details={"name": name, "fields": len(fields)})
+
+        return {
+            "id": form_id, "name": name, "description": description,
+            "fields": fields, "theme": theme, "form_url": s3_url,
+            "created_at": str(row[1]),
+            "message": f"Form '{name}' created. Share this link: {s3_url}",
+        }
+    except Exception as e:
+        conn.rollback()
+        return {"error": f"Failed to create form: {str(e)}"}
+    finally:
+        conn.close()
+
+
+def handle_form_list(args, user=None):
+    """List all active forms."""
+    page = max(int(args.get("page", 1)), 1)
+    limit = min(max(int(args.get("limit", 20)), 1), 100)
+    offset = (page - 1) * limit
+
+    S3_BUCKET = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
+    s3_client = boto3.client("s3", region_name="us-east-1")
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM forms WHERE is_active = TRUE")
+        total = cur.fetchone()[0]
+
+        cur.execute(
+            """SELECT id, name, description, theme, s3_url, created_at
+               FROM forms WHERE is_active = TRUE
+               ORDER BY created_at DESC LIMIT %s OFFSET %s""",
+            [limit, offset],
+        )
+        rows = cur.fetchall()
+
+        forms = []
+        for r in rows:
+            form_url = None
+            if r[4]:
+                form_url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": r[4]}, ExpiresIn=604800)
+            forms.append({"id": str(r[0]), "name": r[1], "description": r[2], "theme": r[3], "form_url": form_url, "created_at": str(r[5])})
+
+        return {"forms": forms, "total": total, "page": page, "limit": limit}
+    finally:
+        conn.close()
+
+
+def handle_form_get(args, user=None):
+    """Get single form details."""
+    form_id = args.get("form_id")
+    if not form_id:
+        return {"error": "form_id is required"}
+
+    S3_BUCKET = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
+    s3_client = boto3.client("s3", region_name="us-east-1")
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT id, name, description, schema_json, theme, s3_url, is_active, created_by, created_at
+               FROM forms WHERE id = %s""",
+            (form_id,),
+        )
+        r = cur.fetchone()
+        if not r:
+            return {"error": "Form not found"}
+        if not r[6]:
+            return {"error": "Form has been deactivated"}
+
+        form_url = None
+        if r[5]:
+            form_url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": r[5]}, ExpiresIn=604800)
+
+        schema = r[3] if isinstance(r[3], list) else json.loads(r[3] or "[]")
+        return {
+            "id": str(r[0]), "name": r[1], "description": r[2], "fields": schema,
+            "theme": r[4], "form_url": form_url,
+            "created_by": str(r[7]) if r[7] else None, "created_at": str(r[8]),
+        }
+    finally:
+        conn.close()
+
+
+def handle_form_submissions(args, user=None):
+    """List all submissions for a form from DynamoDB."""
+    form_id = args.get("form_id")
+    if not form_id:
+        return {"error": "form_id is required"}
+
+    limit = min(max(int(args.get("limit", 50)), 1), 100)
+    DYNAMO_TABLE = os.environ.get("FORM_SUBMISSIONS_TABLE", "omnidesk-form-submissions")
+    ddb = boto3.resource("dynamodb", region_name="us-east-1")
+    ddb_table = ddb.Table(DYNAMO_TABLE)
+
+    from boto3.dynamodb.conditions import Key as DDBKey
+
+    # Verify form exists
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, name FROM forms WHERE id = %s", (form_id,))
+        form = cur.fetchone()
+        if not form:
+            return {"error": "Form not found"}
+    finally:
+        conn.close()
+
+    response = ddb_table.query(
+        KeyConditionExpression=DDBKey("form_id").eq(str(form_id)),
+        ScanIndexForward=False,
+        Limit=limit,
+    )
+    items = response.get("Items", [])
+
+    submissions = []
+    for item in items:
+        submissions.append({
+            "submission_id": item.get("submission_uuid"),
+            "data": item.get("data", {}),
+            "submitted_at": item.get("submitted_at"),
+        })
+
+    return {
+        "form_id": str(form_id),
+        "form_name": form[1],
+        "submissions": submissions,
+        "count": len(submissions),
+    }
+
+
 TOOL_HANDLERS = {
     "omnidesk_start": handle_omnidesk_start,
     "omnidesk_help": handle_omnidesk_help,
@@ -2206,6 +2851,13 @@ TOOL_HANDLERS = {
     "invoice_send": handle_invoice_send,
     "org_settings_get": handle_org_settings_get,
     "org_settings_update": handle_org_settings_update,
+    "report_generate": handle_report_generate,
+    "report_list": handle_report_list,
+    "report_get": handle_report_get,
+    "form_create": handle_form_create,
+    "form_list": handle_form_list,
+    "form_get": handle_form_get,
+    "form_submissions": handle_form_submissions,
 }
 
 # ── JSON-RPC Helpers ────────────────────────────────────────────────────
