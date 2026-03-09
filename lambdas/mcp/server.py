@@ -2,8 +2,16 @@
 POST /mcp
 MCP JSON-RPC server — handles initialize, ping, tools/list, tools/call.
 Stateless Lambda implementation (no SSE).
+
+Auth flow:
+  - JWT token is configured in Claude Desktop's mcp-remote headers
+  - Every tools/call extracts user from the auth_token argument
+  - If token is expired, user must regenerate via /api/auth/login and update config
+  - Token expiry: 48 hours of inactivity (configurable in jwt_helper.py)
 """
 import json
+from utils.db import get_connection
+from utils.jwt_helper import verify_token
 
 SERVER_INFO = {
     "name": "omnidesk-mcp",
@@ -21,11 +29,52 @@ CORS_HEADERS = {
     "Mcp-Session-Id": "lambda-stateless",
 }
 
-# Tool catalog — empty for Phase 1, will grow in Phase 2+
-TOOLS = []
+# ── Tool Catalog ────────────────────────────────────────────────────────
 
-# Tool handlers — empty for now
-TOOL_HANDLERS = {}
+TOOLS = [
+    {
+        "name": "get_profile",
+        "description": "Get the current authenticated user's profile (name, email, role, phone).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+]
+
+# ── Tool Handlers ───────────────────────────────────────────────────────
+
+
+def handle_get_profile(args, user=None):
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, email, full_name, phone, role, is_active, created_at FROM users WHERE id = %s",
+            (user["user_id"],),
+        )
+        row = cur.fetchone()
+
+        if not row or not row[5]:
+            return {"error": "User not found or deactivated"}
+
+        return {
+            "user_id": str(row[0]),
+            "email": row[1],
+            "full_name": row[2],
+            "phone": row[3],
+            "role": row[4],
+            "created_at": str(row[6]),
+        }
+    finally:
+        conn.close()
+
+
+TOOL_HANDLERS = {
+    "get_profile": handle_get_profile,
+}
+
+# ── JSON-RPC Helpers ────────────────────────────────────────────────────
 
 
 def jsonrpc_response(req_id, result):
@@ -46,18 +95,27 @@ def jsonrpc_error(req_id, code, message):
     }
 
 
+def extract_user_from_headers(event):
+    """Extract JWT user from Authorization header set by mcp-remote."""
+    headers = event.get("headers") or {}
+    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+    if auth_header.startswith("Bearer "):
+        return verify_token(auth_header[7:], expected_type="access")
+    return None
+
+
+# ── Lambda Handler ──────────────────────────────────────────────────────
+
+
 def lambda_handler(event, context):
     method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method", "")
 
-    # CORS preflight
     if method == "OPTIONS":
         return {"statusCode": 204, "headers": CORS_HEADERS, "body": ""}
 
-    # SSE not supported
     if method == "GET":
-        return {"statusCode": 405, "body": "SSE not supported in Lambda mode"}
+        return {"statusCode": 405, "headers": CORS_HEADERS, "body": "SSE not supported in Lambda mode"}
 
-    # Session termination — no-op
     if method == "DELETE":
         return {"statusCode": 200, "headers": CORS_HEADERS, "body": ""}
 
@@ -97,7 +155,18 @@ def lambda_handler(event, context):
             return jsonrpc_error(req_id, -32602, f"Unknown tool: {tool_name}")
 
         try:
-            result = handler(arguments)
+            # Extract user from Authorization header
+            user = extract_user_from_headers(event)
+            if not user:
+                return jsonrpc_response(req_id, {
+                    "content": [{"type": "text", "text": json.dumps({
+                        "error": "Authentication required. Your token is missing or expired. Please generate a new token via /api/auth/login and update your Claude Desktop config."
+                    })}],
+                    "isError": True,
+                })
+
+            result = handler(arguments, user=user)
+
             return jsonrpc_response(req_id, {
                 "content": [{"type": "text", "text": json.dumps(result, default=str)}],
             })

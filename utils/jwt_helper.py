@@ -7,7 +7,7 @@ import jwt
 
 _cached_secret = None
 
-ACCESS_TOKEN_EXPIRY_HOURS = 24
+ACCESS_TOKEN_EXPIRY_HOURS = 48
 REFRESH_TOKEN_EXPIRY_DAYS = 30
 
 

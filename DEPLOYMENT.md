@@ -288,10 +288,58 @@ curl -s -X POST "$BASE/mcp" -H "Content-Type: application/json" \
 
 ---
 
+## 6. MCP Token Management
+
+### Generate a new 48h token
+
+```bash
+curl -s -X POST https://zak2w9nuuh.execute-api.us-east-1.amazonaws.com/dev/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"admin@omnidesk.test","password":"Admin@1234"}'
+# Copy the access_token from the JSON response
+```
+
+### Update Claude Desktop config
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
+
+```json
+"omnidesk": {
+  "command": "npx",
+  "args": [
+    "mcp-remote",
+    "https://zak2w9nuuh.execute-api.us-east-1.amazonaws.com/dev/mcp",
+    "--header",
+    "Authorization: Bearer <paste-token-here>"
+  ]
+}
+```
+
+Restart Claude Desktop after updating.
+
+### Token details
+
+| Setting | Value |
+|---------|-------|
+| Access token expiry | 48 hours |
+| Refresh token expiry | 30 days |
+| Algorithm | HS256 |
+| Secret | AWS Secrets Manager `omnidesk/jwt-secret` |
+| Claims | `user_id`, `email`, `role`, `type`, `iat`, `exp` |
+
+### When token expires
+
+MCP tools return: `"error": "Authentication required. Your token is missing or expired."`
+Regenerate using the curl command above and restart Claude Desktop.
+
+---
+
 ## Gotchas & Lessons Learned
 
 1. **Layer binary compatibility**: Always build with `--platform manylinux2014_aarch64 --only-binary=:all:` on macOS. Native macOS .so files cause `invalid ELF header` on Lambda.
 2. **IAM role propagation**: Wait ~10 seconds after creating a role before creating Lambda functions, or you'll get `The role defined for the function cannot be assumed by Lambda`.
 3. **API Gateway integration URI**: Must be the full invocation URI format: `arn:aws:apigateway:{region}:lambda:path/2015-03-31/functions/{function-arn}/invocations`. Shortened ARNs fail with "must contain path or action".
 4. **Lambda handler path**: Handler is always `lambda_function.lambda_handler` — the source file must be renamed to `lambda_function.py` in the zip.
-5. **utils/ packaging**: Every Lambda zip must include the `utils/` directory (except MCP server which has no deps).
+5. **utils/ packaging**: Every Lambda zip must include the `utils/` directory.
+6. **mcp-remote needs GET+DELETE**: API Gateway `/mcp` must have GET, POST, DELETE, and OPTIONS methods. `mcp-remote` does a Streamable HTTP handshake via GET before sending POST. Missing GET causes 403 "Missing Authentication Token".
+7. **No login tool in MCP**: Token is passed via `--header` in Claude Desktop config, not via a chat-based login flow. User never types credentials in chat.
