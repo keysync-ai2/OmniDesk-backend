@@ -19,7 +19,7 @@ from utils.audit import log_action
 
 SERVER_INFO = {
     "name": "omnidesk-mcp",
-    "version": "2.0.0",
+    "version": "2.1.0",
 }
 
 PROTOCOL_VERSION = "2025-03-26"
@@ -36,21 +36,37 @@ CORS_HEADERS = {
 # ── Tool Catalog ────────────────────────────────────────────────────────
 
 TOOLS = [
-    # Auth
+    # ── Start & Help ──────────────────────────────────────────────────
     {
-        "name": "get_profile",
-        "description": "Get the current authenticated user's profile (name, email, role, phone).",
+        "name": "omnidesk_start",
+        "description": "Login to OmniDesk. Call this FIRST when the user says 'Login OmniDesk', 'Start OmniDesk', 'Open OmniDesk', or greets you. Returns: user profile, low stock alerts, recent activity summary, and a welcome message with available actions.",
         "inputSchema": {"type": "object", "properties": {}},
     },
-    # Categories
+    {
+        "name": "omnidesk_help",
+        "description": "Show the OmniDesk help menu. Call this when the user asks 'help', 'what can you do', 'show commands', or 'how to use OmniDesk'. Returns a categorized list of all available tools with usage examples.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "module": {"type": "string", "enum": ["all", "products", "stock", "categories", "warehouses", "auth"], "description": "Filter help by module (default: all)"},
+            },
+        },
+    },
+    # ── Auth ──────────────────────────────────────────────────────────
+    {
+        "name": "get_profile",
+        "description": "Get the current authenticated user's profile including name, email, role, and phone number.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    # ── Categories ────────────────────────────────────────────────────
     {
         "name": "category_list",
-        "description": "List all product categories.",
+        "description": "List all product categories. Use this when user asks to see categories, browse product types, or before creating a product to find the right category.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "category_create",
-        "description": "Create a new product category. Requires manager or admin role.",
+        "description": "Create a new product category (e.g., 'Electronics', 'Clothing', 'Footwear'). Requires manager or admin role. Use category_list first to avoid duplicates.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -63,7 +79,7 @@ TOOLS = [
     # Products
     {
         "name": "product_list",
-        "description": "List products with optional filtering by category, search term, and pagination.",
+        "description": "List all products with pagination. Supports filtering by category and keyword search on name/SKU. Use this for browsing inventory or finding products by exact name. For natural language queries like 'comfortable shirts', use product_search instead.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -87,7 +103,7 @@ TOOLS = [
     },
     {
         "name": "product_create",
-        "description": "Create a new product. Requires manager or admin role.",
+        "description": "Create a new product with SKU, name, price, and optional category. Example: 'Add Blue T-Shirt, SKU BT001, ₹499 in Clothing category'. Requires manager or admin role. The product is automatically indexed for semantic search.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -130,7 +146,7 @@ TOOLS = [
     },
     {
         "name": "product_search",
-        "description": "Semantic search for products using natural language. Finds products by meaning, not just keyword matching. Example: 'blue clothing' finds 'Navy T-Shirt'.",
+        "description": "Smart search for products using natural language. Finds products by meaning, not just keywords. Examples: 'comfortable cotton clothing', 'something for running', 'affordable shirts'. Use this instead of product_list when the user describes what they want in natural language.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -161,7 +177,7 @@ TOOLS = [
     # Stock
     {
         "name": "stock_check",
-        "description": "Check stock level for a product, optionally per warehouse. Shows total and per-warehouse breakdown.",
+        "description": "Check how many units of a product are in stock. Shows total across all warehouses and per-warehouse breakdown. Example: 'How many Blue T-Shirts do we have?'",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -173,7 +189,7 @@ TOOLS = [
     },
     {
         "name": "stock_adjust",
-        "description": "Adjust stock quantity: add, deduct, or set to absolute value. Requires staff role or higher.",
+        "description": "Add, deduct, or set stock quantity for a product in a specific warehouse. Examples: 'Add 100 Blue T-Shirts to Main Warehouse', 'Deduct 5 units, sold today'. Always logs the movement with reason. Requires staff role or higher.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -188,7 +204,7 @@ TOOLS = [
     },
     {
         "name": "stock_low_alerts",
-        "description": "List all products that are below their low stock threshold.",
+        "description": "Show products running low on stock (below their threshold). Use this for inventory alerts, reorder planning, or when user asks 'what needs restocking?'",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -218,6 +234,8 @@ ROLE_HIERARCHY = {"admin": 4, "manager": 3, "staff": 2, "viewer": 1}
 
 # Tool name → minimum role required
 TOOL_ROLES = {
+    "omnidesk_start": "viewer",
+    "omnidesk_help": "viewer",
     "get_profile": "viewer",
     "category_list": "viewer",
     "category_create": "manager",
@@ -244,6 +262,145 @@ def check_role(user, tool_name):
 
 
 # ── Tool Handlers ───────────────────────────────────────────────────────
+
+
+def handle_omnidesk_start(args, user=None):
+    """Dashboard: profile + low stock alerts + product count + recent summary."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        # Profile
+        cur.execute(
+            "SELECT id, email, full_name, phone, role, created_at FROM users WHERE id = %s AND is_active = TRUE",
+            (user["user_id"],),
+        )
+        profile_row = cur.fetchone()
+        if not profile_row:
+            return {"error": "User not found or deactivated"}
+
+        profile = {
+            "user_id": str(profile_row[0]), "email": profile_row[1],
+            "full_name": profile_row[2], "phone": profile_row[3],
+            "role": profile_row[4], "member_since": str(profile_row[5]),
+        }
+
+        # Quick stats
+        cur.execute("SELECT COUNT(*) FROM products WHERE is_active = TRUE")
+        total_products = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM categories WHERE is_active = TRUE")
+        total_categories = cur.fetchone()[0]
+
+        cur.execute("SELECT COUNT(*) FROM warehouses WHERE is_active = TRUE")
+        total_warehouses = cur.fetchone()[0]
+
+        # Low stock alerts
+        cur.execute(
+            """SELECT p.name, p.sku, s.quantity, s.low_stock_threshold, w.name
+               FROM stock s JOIN products p ON s.product_id = p.id JOIN warehouses w ON s.warehouse_id = w.id
+               WHERE s.quantity < s.low_stock_threshold AND p.is_active = TRUE
+               ORDER BY (s.low_stock_threshold - s.quantity) DESC LIMIT 5"""
+        )
+        low_stock = [
+            {"product": r[0], "sku": r[1], "quantity": r[2], "threshold": r[3], "warehouse": r[4]}
+            for r in cur.fetchall()
+        ]
+
+        return {
+            "welcome": f"Welcome back, {profile['full_name']}!",
+            "profile": profile,
+            "dashboard": {
+                "total_products": total_products,
+                "total_categories": total_categories,
+                "total_warehouses": total_warehouses,
+                "low_stock_alerts": len(low_stock),
+            },
+            "low_stock_items": low_stock if low_stock else "All products are well stocked.",
+            "quick_actions": [
+                "Try: 'Show me all products'",
+                "Try: 'Add a new product'",
+                "Try: 'Check stock for [product name]'",
+                "Try: 'Search for [description]'",
+                "Try: 'Show low stock alerts'",
+                "Say 'help' for full command list",
+            ],
+        }
+    finally:
+        conn.close()
+
+
+def handle_omnidesk_help(args, user=None):
+    """Return categorized help menu with usage examples."""
+    module_filter = (args.get("module") or "all").lower()
+
+    help_sections = {
+        "auth": {
+            "title": "Auth & Profile",
+            "tools": [
+                {"command": "omnidesk_start", "description": "Login dashboard — your profile, stock alerts, quick stats", "example": "Login OmniDesk"},
+                {"command": "get_profile", "description": "View your profile details", "example": "Show my profile"},
+            ],
+        },
+        "categories": {
+            "title": "Categories",
+            "tools": [
+                {"command": "category_list", "description": "List all product categories", "example": "Show me all categories"},
+                {"command": "category_create", "description": "Create a new category (manager+)", "example": "Create category 'Electronics'"},
+            ],
+        },
+        "products": {
+            "title": "Products",
+            "tools": [
+                {"command": "product_list", "description": "Browse products with filters", "example": "Show all products in Clothing"},
+                {"command": "product_get", "description": "Get full details of a product", "example": "Show details of Blue T-Shirt"},
+                {"command": "product_create", "description": "Add a new product (manager+)", "example": "Add product Red Polo, SKU RP001, ₹699"},
+                {"command": "product_update", "description": "Update product fields (manager+)", "example": "Change Blue T-Shirt price to ₹549"},
+                {"command": "product_deactivate", "description": "Remove a product (admin only)", "example": "Deactivate product Wireless Mouse"},
+                {"command": "product_search", "description": "Smart search by description", "example": "Find comfortable cotton clothing"},
+            ],
+        },
+        "warehouses": {
+            "title": "Warehouses",
+            "tools": [
+                {"command": "warehouse_list", "description": "List all warehouses", "example": "Show me all warehouses"},
+                {"command": "warehouse_create", "description": "Add a new warehouse (admin only)", "example": "Create warehouse 'Mumbai Hub'"},
+            ],
+        },
+        "stock": {
+            "title": "Stock Management",
+            "tools": [
+                {"command": "stock_check", "description": "Check stock level for a product", "example": "How many Blue T-Shirts in stock?"},
+                {"command": "stock_adjust", "description": "Add/deduct/set stock (staff+)", "example": "Add 50 Blue T-Shirts to Main Warehouse"},
+                {"command": "stock_low_alerts", "description": "Products running low on stock", "example": "What needs restocking?"},
+                {"command": "stock_movements", "description": "Stock change history (manager+)", "example": "Show stock history for Blue T-Shirt"},
+            ],
+        },
+    }
+
+    if module_filter != "all" and module_filter in help_sections:
+        sections = {module_filter: help_sections[module_filter]}
+    else:
+        sections = help_sections
+
+    role_info = {
+        "viewer": "Can view products, stock, categories",
+        "staff": "Can adjust stock + all viewer actions",
+        "manager": "Can create/update products & categories + all staff actions",
+        "admin": "Full access — create warehouses, deactivate products, all actions",
+    }
+
+    return {
+        "help": "OmniDesk — AI-Powered Business Operations",
+        "your_role": user.get("role", "viewer"),
+        "role_permissions": role_info,
+        "modules": sections,
+        "tips": [
+            "Say 'Login OmniDesk' to see your dashboard",
+            "Use natural language — 'Find me something blue' works!",
+            "All write actions are logged for audit",
+        ],
+    }
 
 
 def handle_get_profile(args, user=None):
@@ -852,6 +1009,8 @@ def handle_product_search(args, user=None):
 
 
 TOOL_HANDLERS = {
+    "omnidesk_start": handle_omnidesk_start,
+    "omnidesk_help": handle_omnidesk_help,
     "get_profile": handle_get_profile,
     "category_list": handle_category_list,
     "category_create": handle_category_create,
