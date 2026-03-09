@@ -16,7 +16,7 @@ export AWS_CONFIG_FILE=/Users/dhruvsharma/Documents/Research/OmniDesk/.aws/confi
 | AWS Account | `577397739686` |
 | Region | `us-east-1` |
 | Lambda Role | `arn:aws:iam::577397739686:role/omnidesk-lambda-role` |
-| Lambda Layer | `arn:aws:lambda:us-east-1:577397739686:layer:omnidesk-shared-layer:3` |
+| Lambda Layer | `arn:aws:lambda:us-east-1:577397739686:layer:omnidesk-shared-layer:10` |
 | API Gateway ID | `zak2w9nuuh` |
 | API Gateway URL | `https://zak2w9nuuh.execute-api.us-east-1.amazonaws.com/dev` |
 | S3 Bucket | `omnidesk-files-577397739686` |

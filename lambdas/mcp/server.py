@@ -9,6 +9,9 @@ Auth flow:
   - If token is expired, user must regenerate via /api/auth/login and update config
   - Token expiry: 48 hours (configurable in jwt_helper.py)
 """
+from datetime import datetime, timezone, timedelta
+import string
+import random
 import json
 import os
 import boto3
@@ -16,6 +19,7 @@ from pinecone import Pinecone
 from utils.db import get_connection
 from utils.jwt_helper import verify_token
 from utils.audit import log_action
+from utils.pdf_builder import build_invoice_pdf
 
 SERVER_INFO = {
     "name": "omnidesk-mcp",
@@ -39,7 +43,7 @@ TOOLS = [
     # ── Start & Help ──────────────────────────────────────────────────
     {
         "name": "omnidesk_start",
-        "description": "Login to OmniDesk. Call this FIRST when the user says 'Login OmniDesk', 'Start OmniDesk', 'Open OmniDesk', or greets you. Returns: user profile, low stock alerts, recent activity summary, and a welcome message with available actions.",
+        "description": "Login to OmniDesk. Call this FIRST when the user says 'Login OmniDesk', 'Start OmniDesk', 'Open OmniDesk', or greets you. Returns a pre-formatted markdown dashboard. IMPORTANT: Display the returned text EXACTLY as-is, preserving all markdown formatting including headers (##, ###), tables, bold text, horizontal rules, and numbered lists. Do NOT summarize, paraphrase, or rewrite the output.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -318,13 +322,17 @@ TOOLS = [
     # ── Invoices ──────────────────────────────────────────────────────
     {
         "name": "invoice_generate",
-        "description": "Generate an invoice from an order. Creates an HTML invoice with line items and uploads to S3. Supports GST tax rate. Example: 'Generate invoice for Order ORD-20260309-A3F7 with 18% GST'. Requires manager role.",
+        "description": "Generate a professional PDF invoice from an order. Supports multi-currency, configurable tax (GST/VAT/Sales Tax), and customizable company info. Uses org settings as defaults with per-invoice overrides. Example: 'Generate invoice for Order ORD-20260309-A3F7 with 18% GST'. Requires manager role.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "order_id": {"type": "string", "description": "Order UUID to generate invoice for"},
-                "tax_rate": {"type": "number", "description": "Tax rate percentage (e.g., 18 for 18% GST, default 0)"},
+                "tax_rate": {"type": "number", "description": "Tax rate percentage (e.g., 18 for 18% GST, 20 for 20% VAT, default 0)"},
                 "due_date": {"type": "string", "description": "Due date YYYY-MM-DD (default: 30 days from now)"},
+                "notes": {"type": "string", "description": "Additional notes to include on the invoice"},
+                "currency_symbol": {"type": "string", "description": "Override currency symbol (e.g., '$', '€', '£'). Uses org default if not provided."},
+                "tax_label": {"type": "string", "description": "Override tax label (e.g., 'VAT', 'Sales Tax'). Uses org default if not provided."},
+                "payment_terms": {"type": "string", "description": "Override payment terms (e.g., 'Due on receipt', 'Net 15'). Uses org default if not provided."},
             },
             "required": ["order_id"],
         },
@@ -377,6 +385,26 @@ TOOLS = [
             "required": ["invoice_id"],
         },
     },
+    # ── Org Settings ──────────────────────────────────────────
+    {
+        "name": "org_settings_get",
+        "description": "View organization settings (company info, currency, tax label, invoice defaults). Example: 'Show org settings' or 'What currency are invoices in?'.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "org_settings_update",
+        "description": "Update organization settings for invoice customization. Settings: company_name, company_address, company_phone, company_email, currency_code, currency_symbol, tax_label (GST/VAT/Sales Tax), payment_terms, invoice_footer, locale. Example: 'Change currency to USD ($)' or 'Set company name to Acme Corp'. Requires admin role.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "settings": {
+                    "type": "object",
+                    "description": "Key-value pairs to update. Keys: company_name, company_address, company_phone, company_email, currency_code, currency_symbol, tax_label, payment_terms, invoice_footer, locale",
+                },
+            },
+            "required": ["settings"],
+        },
+    },
 ]
 
 # ── RBAC ───────────────────────────────────────────────────────────────
@@ -413,6 +441,8 @@ TOOL_ROLES = {
     "invoice_get": "viewer",
     "invoice_download": "viewer",
     "invoice_send": "manager",
+    "org_settings_get": "viewer",
+    "org_settings_update": "admin",
 }
 
 
@@ -457,10 +487,12 @@ def handle_omnidesk_start(args, user=None):
         cur.execute("SELECT COUNT(*) FROM warehouses WHERE is_active = TRUE")
         total_warehouses = cur.fetchone()[0]
 
-        cur.execute("SELECT COUNT(*) FROM orders WHERE status NOT IN ('cancelled', 'delivered')")
+        cur.execute(
+            "SELECT COUNT(*) FROM orders WHERE status NOT IN ('cancelled', 'delivered')")
         active_orders = cur.fetchone()[0]
 
-        cur.execute("SELECT COUNT(*) FROM invoices WHERE payment_status = 'unpaid'")
+        cur.execute(
+            "SELECT COUNT(*) FROM invoices WHERE payment_status = 'unpaid'")
         unpaid_invoices = cur.fetchone()[0]
 
         # Low stock alerts
@@ -471,7 +503,8 @@ def handle_omnidesk_start(args, user=None):
                ORDER BY (s.low_stock_threshold - s.quantity) DESC LIMIT 5"""
         )
         low_stock = [
-            {"product": r[0], "sku": r[1], "quantity": r[2], "threshold": r[3], "warehouse": r[4]}
+            {"product": r[0], "sku": r[1], "quantity": r[2],
+                "threshold": r[3], "warehouse": r[4]}
             for r in cur.fetchall()
         ]
 
@@ -481,7 +514,8 @@ def handle_omnidesk_start(args, user=None):
 
         lines.append(f"## Welcome back, {name}!")
         lines.append("")
-        lines.append(f"You're logged in as **{profile['email']}** ({profile['role']}).")
+        lines.append(
+            f"You're logged in as **{profile['email']}** ({profile['role']}).")
         lines.append("")
         lines.append("Here's what's happening in your business right now:")
         lines.append("")
@@ -509,9 +543,11 @@ def handle_omnidesk_start(args, user=None):
             lines.append("| Product | In Stock | Min Required |")
             lines.append("|---------|----------|--------------|")
             for item in low_stock:
-                lines.append(f"| {item['product']} | {item['quantity']} units | {item['threshold']} units |")
+                lines.append(
+                    f"| {item['product']} | {item['quantity']} units | {item['threshold']} units |")
             lines.append("")
-            lines.append('*Consider restocking soon — say "Add [qty] units of [product] to [warehouse]"*')
+            lines.append(
+                '*Consider restocking soon — say "Add [qty] units of [product] to [warehouse]"*')
             lines.append("")
         else:
             lines.append("### Stock Status")
@@ -532,7 +568,10 @@ def handle_omnidesk_start(args, user=None):
         lines.append('4. "Generate invoice for [order]"')
         lines.append('5. "Search for [keyword]"')
         lines.append("")
-        lines.append('**Need more?** Just say "help" for the full command menu across all 7 modules.')
+        lines.append(
+            '**Need more?** Just say "help" for the full command menu across all 7 modules.')
+        lines.append(
+            'Instructions: Display above details as it is without changing or updating anything. DO NOT FORMAT IT.')
 
         return {"text": "\n".join(lines)}
     finally:
@@ -547,63 +586,90 @@ def handle_omnidesk_help(args, user=None):
         "auth": {
             "title": "Auth & Profile",
             "tools": [
-                {"command": "omnidesk_start", "description": "Login dashboard — your profile, stock alerts, quick stats", "example": "Login OmniDesk"},
-                {"command": "get_profile", "description": "View your profile details", "example": "Show my profile"},
+                {"command": "omnidesk_start", "description": "Login dashboard — your profile, stock alerts, quick stats",
+                    "example": "Login OmniDesk"},
+                {"command": "get_profile", "description": "View your profile details",
+                    "example": "Show my profile"},
             ],
         },
         "categories": {
             "title": "Categories",
             "tools": [
-                {"command": "category_list", "description": "List all product categories", "example": "Show me all categories"},
-                {"command": "category_create", "description": "Create a new category (manager+)", "example": "Create category 'Electronics'"},
+                {"command": "category_list", "description": "List all product categories",
+                    "example": "Show me all categories"},
+                {"command": "category_create",
+                    "description": "Create a new category (manager+)", "example": "Create category 'Electronics'"},
             ],
         },
         "products": {
             "title": "Products",
             "tools": [
-                {"command": "product_list", "description": "Browse products with filters", "example": "Show all products in Clothing"},
-                {"command": "product_get", "description": "Get full details of a product", "example": "Show details of Blue T-Shirt"},
-                {"command": "product_create", "description": "Add a new product (manager+)", "example": "Add product Red Polo, SKU RP001, ₹699"},
-                {"command": "product_update", "description": "Update product fields (manager+)", "example": "Change Blue T-Shirt price to ₹549"},
-                {"command": "product_deactivate", "description": "Remove a product (admin only)", "example": "Deactivate product Wireless Mouse"},
-                {"command": "product_search", "description": "Smart search by description", "example": "Find comfortable cotton clothing"},
+                {"command": "product_list", "description": "Browse products with filters",
+                    "example": "Show all products in Clothing"},
+                {"command": "product_get", "description": "Get full details of a product",
+                    "example": "Show details of Blue T-Shirt"},
+                {"command": "product_create",
+                    "description": "Add a new product (manager+)", "example": "Add product Red Polo, SKU RP001, ₹699"},
+                {"command": "product_update",
+                    "description": "Update product fields (manager+)", "example": "Change Blue T-Shirt price to ₹549"},
+                {"command": "product_deactivate",
+                    "description": "Remove a product (admin only)", "example": "Deactivate product Wireless Mouse"},
+                {"command": "product_search", "description": "Smart search by description",
+                    "example": "Find comfortable cotton clothing"},
             ],
         },
         "warehouses": {
             "title": "Warehouses",
             "tools": [
-                {"command": "warehouse_list", "description": "List all warehouses", "example": "Show me all warehouses"},
-                {"command": "warehouse_create", "description": "Add a new warehouse (admin only)", "example": "Create warehouse 'Mumbai Hub'"},
+                {"command": "warehouse_list", "description": "List all warehouses",
+                    "example": "Show me all warehouses"},
+                {"command": "warehouse_create",
+                    "description": "Add a new warehouse (admin only)", "example": "Create warehouse 'Mumbai Hub'"},
             ],
         },
         "stock": {
             "title": "Stock Management",
             "tools": [
-                {"command": "stock_check", "description": "Check stock level for a product", "example": "How many Blue T-Shirts in stock?"},
-                {"command": "stock_adjust", "description": "Add/deduct/set stock (staff+)", "example": "Add 50 Blue T-Shirts to Main Warehouse"},
-                {"command": "stock_low_alerts", "description": "Products running low on stock", "example": "What needs restocking?"},
-                {"command": "stock_movements", "description": "Stock change history (manager+)", "example": "Show stock history for Blue T-Shirt"},
+                {"command": "stock_check", "description": "Check stock level for a product",
+                    "example": "How many Blue T-Shirts in stock?"},
+                {"command": "stock_adjust",
+                    "description": "Add/deduct/set stock (staff+)", "example": "Add 50 Blue T-Shirts to Main Warehouse"},
+                {"command": "stock_low_alerts", "description": "Products running low on stock",
+                    "example": "What needs restocking?"},
+                {"command": "stock_movements",
+                    "description": "Stock change history (manager+)", "example": "Show stock history for Blue T-Shirt"},
             ],
         },
         "orders": {
             "title": "Order Management",
             "tools": [
-                {"command": "order_create", "description": "Create a new order (staff+)", "example": "Create order for Rahul — 3 Blue T-Shirts"},
-                {"command": "order_list", "description": "List/search orders", "example": "Show all pending orders"},
-                {"command": "order_get", "description": "Get order details with items", "example": "Show details of Order ORD-20260309-A3F7"},
-                {"command": "order_update_status", "description": "Update order status (staff+)", "example": "Mark order as confirmed"},
-                {"command": "order_cancel", "description": "Cancel an order (admin only)", "example": "Cancel Order ORD-20260309-A3F7"},
-                {"command": "order_history", "description": "View order status timeline", "example": "Show history for this order"},
+                {"command": "order_create",
+                    "description": "Create a new order (staff+)", "example": "Create order for Rahul — 3 Blue T-Shirts"},
+                {"command": "order_list", "description": "List/search orders",
+                    "example": "Show all pending orders"},
+                {"command": "order_get", "description": "Get order details with items",
+                    "example": "Show details of Order ORD-20260309-A3F7"},
+                {"command": "order_update_status",
+                    "description": "Update order status (staff+)", "example": "Mark order as confirmed"},
+                {"command": "order_cancel",
+                    "description": "Cancel an order (admin only)", "example": "Cancel Order ORD-20260309-A3F7"},
+                {"command": "order_history", "description": "View order status timeline",
+                    "example": "Show history for this order"},
             ],
         },
         "invoices": {
             "title": "Invoices",
             "tools": [
-                {"command": "invoice_generate", "description": "Generate invoice from order (manager+)", "example": "Generate invoice for this order with 18% GST"},
-                {"command": "invoice_list", "description": "List/search invoices", "example": "Show all unpaid invoices"},
-                {"command": "invoice_get", "description": "Get invoice details", "example": "Show invoice INV-20260309-B4K2"},
-                {"command": "invoice_download", "description": "Get download link for invoice", "example": "Download this invoice"},
-                {"command": "invoice_send", "description": "Send invoice to customer (manager+)", "example": "Send this invoice to the customer"},
+                {"command": "invoice_generate",
+                    "description": "Generate invoice from order (manager+)", "example": "Generate invoice for this order with 18% GST"},
+                {"command": "invoice_list", "description": "List/search invoices",
+                    "example": "Show all unpaid invoices"},
+                {"command": "invoice_get", "description": "Get invoice details",
+                    "example": "Show invoice INV-20260309-B4K2"},
+                {"command": "invoice_download", "description": "Get download link for invoice",
+                    "example": "Download this invoice"},
+                {"command": "invoice_send",
+                    "description": "Send invoice to customer (manager+)", "example": "Send this invoice to the customer"},
             ],
         },
     }
@@ -656,7 +722,8 @@ def handle_category_list(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, name, description, created_at FROM categories WHERE is_active = TRUE ORDER BY name")
+        cur.execute(
+            "SELECT id, name, description, created_at FROM categories WHERE is_active = TRUE ORDER BY name")
         rows = cur.fetchall()
         return {
             "categories": [{"id": str(r[0]), "name": r[1], "description": r[2], "created_at": str(r[3])} for r in rows],
@@ -675,7 +742,8 @@ def handle_category_create(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM categories WHERE name = %s AND is_active = TRUE", (name,))
+        cur.execute(
+            "SELECT id FROM categories WHERE name = %s AND is_active = TRUE", (name,))
         if cur.fetchone():
             return {"error": f"Category '{name}' already exists"}
         cur.execute(
@@ -684,7 +752,8 @@ def handle_category_create(args, user=None):
         )
         row = cur.fetchone()
         conn.commit()
-        log_action(user["user_id"], "create_category", "categories", entity_id=str(row[0]), details={"name": row[1]})
+        log_action(user["user_id"], "create_category", "categories",
+                   entity_id=str(row[0]), details={"name": row[1]})
         return {"id": str(row[0]), "name": row[1], "description": row[2], "created_at": str(row[3])}
     except Exception as e:
         conn.rollback()
@@ -791,7 +860,8 @@ def handle_product_create(args, user=None):
     try:
         cur = conn.cursor()
         if category_id:
-            cur.execute("SELECT id FROM categories WHERE id = %s AND is_active = TRUE", (category_id,))
+            cur.execute(
+                "SELECT id FROM categories WHERE id = %s AND is_active = TRUE", (category_id,))
             if not cur.fetchone():
                 return {"error": "Category not found"}
         cur.execute("SELECT id FROM products WHERE sku = %s", (sku,))
@@ -802,7 +872,8 @@ def handle_product_create(args, user=None):
             """INSERT INTO products (sku, name, description, category_id, unit_price, unit, created_by)
                VALUES (%s, %s, %s, %s, %s, %s, %s)
                RETURNING id, sku, name, description, category_id, unit_price, unit, created_at""",
-            (sku, name, description, category_id, unit_price, unit, user["user_id"]),
+            (sku, name, description, category_id,
+             unit_price, unit, user["user_id"]),
         )
         r = cur.fetchone()
         conn.commit()
@@ -825,7 +896,8 @@ def handle_product_update(args, user=None):
     if not product_id:
         return {"error": "product_id is required"}
 
-    allowed = {"name": str, "description": str, "category_id": str, "unit_price": float, "unit": str}
+    allowed = {"name": str, "description": str,
+               "category_id": str, "unit_price": float, "unit": str}
     updates = []
     params = []
     for field, cast in allowed.items():
@@ -848,7 +920,8 @@ def handle_product_update(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT is_active FROM products WHERE id = %s", (product_id,))
+        cur.execute("SELECT is_active FROM products WHERE id = %s",
+                    (product_id,))
         row = cur.fetchone()
         if not row:
             return {"error": "Product not found"}
@@ -856,7 +929,8 @@ def handle_product_update(args, user=None):
             return {"error": "Product has been deactivated"}
 
         if "category_id" in args and args["category_id"]:
-            cur.execute("SELECT id FROM categories WHERE id = %s AND is_active = TRUE", (args["category_id"],))
+            cur.execute(
+                "SELECT id FROM categories WHERE id = %s AND is_active = TRUE", (args["category_id"],))
             if not cur.fetchone():
                 return {"error": "Category not found"}
 
@@ -900,7 +974,8 @@ def handle_product_deactivate(args, user=None):
         if not row:
             return {"error": "Product not found or already deactivated"}
         conn.commit()
-        log_action(user["user_id"], "deactivate_product", "products", entity_id=product_id, details={"name": row[1]})
+        log_action(user["user_id"], "deactivate_product", "products",
+                   entity_id=product_id, details={"name": row[1]})
         return {"message": f"Product '{row[1]}' deactivated", "id": str(row[0])}
     except Exception as e:
         conn.rollback()
@@ -913,7 +988,8 @@ def handle_warehouse_list(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, name, address, created_at FROM warehouses WHERE is_active = TRUE ORDER BY name")
+        cur.execute(
+            "SELECT id, name, address, created_at FROM warehouses WHERE is_active = TRUE ORDER BY name")
         rows = cur.fetchall()
         return {
             "warehouses": [{"id": str(r[0]), "name": r[1], "address": r[2], "created_at": str(r[3])} for r in rows],
@@ -938,7 +1014,8 @@ def handle_warehouse_create(args, user=None):
         )
         row = cur.fetchone()
         conn.commit()
-        log_action(user["user_id"], "create_warehouse", "warehouses", entity_id=str(row[0]), details={"name": row[1]})
+        log_action(user["user_id"], "create_warehouse", "warehouses",
+                   entity_id=str(row[0]), details={"name": row[1]})
         return {"id": str(row[0]), "name": row[1], "address": row[2], "created_at": str(row[3])}
     except Exception as e:
         conn.rollback()
@@ -957,7 +1034,8 @@ def handle_stock_check(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, name, sku FROM products WHERE id = %s AND is_active = TRUE", (product_id,))
+        cur.execute(
+            "SELECT id, name, sku FROM products WHERE id = %s AND is_active = TRUE", (product_id,))
         product = cur.fetchone()
         if not product:
             return {"error": "Product not found"}
@@ -997,7 +1075,8 @@ def handle_stock_check(args, user=None):
                 (product_id,),
             )
             warehouses = [
-                {"warehouse_id": str(r[0]), "warehouse_name": r[1], "quantity": r[2], "low_stock_threshold": r[3]}
+                {"warehouse_id": str(
+                    r[0]), "warehouse_name": r[1], "quantity": r[2], "low_stock_threshold": r[3]}
                 for r in cur.fetchall()
             ]
             return {
@@ -1032,17 +1111,20 @@ def handle_stock_adjust(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, name FROM products WHERE id = %s AND is_active = TRUE", (product_id,))
+        cur.execute(
+            "SELECT id, name FROM products WHERE id = %s AND is_active = TRUE", (product_id,))
         product = cur.fetchone()
         if not product:
             return {"error": "Product not found"}
 
-        cur.execute("SELECT id, name FROM warehouses WHERE id = %s AND is_active = TRUE", (warehouse_id,))
+        cur.execute(
+            "SELECT id, name FROM warehouses WHERE id = %s AND is_active = TRUE", (warehouse_id,))
         warehouse = cur.fetchone()
         if not warehouse:
             return {"error": "Warehouse not found"}
 
-        cur.execute("SELECT id, quantity FROM stock WHERE product_id = %s AND warehouse_id = %s", (product_id, warehouse_id))
+        cur.execute("SELECT id, quantity FROM stock WHERE product_id = %s AND warehouse_id = %s",
+                    (product_id, warehouse_id))
         stock_row = cur.fetchone()
         current_qty = stock_row[1] if stock_row else 0
 
@@ -1056,14 +1138,17 @@ def handle_stock_adjust(args, user=None):
             new_qty = quantity
 
         if stock_row:
-            cur.execute("UPDATE stock SET quantity = %s, updated_at = NOW() WHERE id = %s", (new_qty, stock_row[0]))
+            cur.execute(
+                "UPDATE stock SET quantity = %s, updated_at = NOW() WHERE id = %s", (new_qty, stock_row[0]))
         else:
-            cur.execute("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (%s, %s, %s)", (product_id, warehouse_id, new_qty))
+            cur.execute("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (%s, %s, %s)",
+                        (product_id, warehouse_id, new_qty))
 
         cur.execute(
             """INSERT INTO stock_movements (product_id, warehouse_id, movement_type, quantity, reason, performed_by)
                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, created_at""",
-            (product_id, warehouse_id, movement_type, quantity, reason, user["user_id"]),
+            (product_id, warehouse_id, movement_type,
+             quantity, reason, user["user_id"]),
         )
         movement = cur.fetchone()
         conn.commit()
@@ -1132,7 +1217,8 @@ def handle_stock_movements(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, name, sku FROM products WHERE id = %s", (product_id,))
+        cur.execute(
+            "SELECT id, name, sku FROM products WHERE id = %s", (product_id,))
         product = cur.fetchone()
         if not product:
             return {"error": "Product not found"}
@@ -1144,7 +1230,8 @@ def handle_stock_movements(args, user=None):
             params.append(warehouse_id)
         where = " AND ".join(conditions)
 
-        cur.execute(f"SELECT COUNT(*) FROM stock_movements sm WHERE {where}", params)
+        cur.execute(
+            f"SELECT COUNT(*) FROM stock_movements sm WHERE {where}", params)
         total = cur.fetchone()[0]
 
         cur.execute(
@@ -1181,7 +1268,8 @@ def _get_pinecone_index():
         return _pc_index
     secret_name = os.environ.get("PINECONE_SECRET_ARN", "omnidesk/pinecone")
     sm = boto3.client("secretsmanager", region_name="us-east-1")
-    secret = json.loads(sm.get_secret_value(SecretId=secret_name)["SecretString"])
+    secret = json.loads(sm.get_secret_value(
+        SecretId=secret_name)["SecretString"])
     _pc_client = Pinecone(api_key=secret["api_key"])
     _pc_index = _pc_client.Index("omnidesk-products")
     return _pc_index
@@ -1207,7 +1295,8 @@ def handle_product_search(args, user=None):
             return {"products": [], "total": 0, "query": query}
 
         score_map = {h["_id"]: h.get("_score", 0) for h in hits}
-        product_ids = sorted([h["_id"] for h in hits], key=lambda pid: score_map.get(pid, 0), reverse=True)
+        product_ids = sorted([h["_id"] for h in hits],
+                             key=lambda pid: score_map.get(pid, 0), reverse=True)
 
         conn = get_connection()
         try:
@@ -1230,7 +1319,8 @@ def handle_product_search(args, user=None):
                     "unit_price": str(r[6]), "unit": r[7], "created_at": str(r[8]),
                     "relevance_score": round(score_map.get(pid, 0), 4),
                 }
-            ordered = [products_by_id[pid] for pid in product_ids if pid in products_by_id]
+            ordered = [products_by_id[pid]
+                       for pid in product_ids if pid in products_by_id]
             return {"products": ordered, "total": len(ordered), "query": query}
         finally:
             conn.close()
@@ -1240,9 +1330,6 @@ def handle_product_search(args, user=None):
 
 # ── Order Handlers ─────────────────────────────────────────────────────
 
-import random
-import string
-from datetime import datetime, timezone, timedelta
 
 VALID_TRANSITIONS = {
     "pending": ["confirmed", "cancelled"],
@@ -1255,7 +1342,8 @@ VALID_TRANSITIONS = {
 
 def _generate_number(prefix):
     date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
-    rand_part = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    rand_part = "".join(random.choices(
+        string.ascii_uppercase + string.digits, k=4))
     return f"{prefix}-{date_part}-{rand_part}"
 
 
@@ -1292,7 +1380,8 @@ def handle_order_create(args, user=None):
             f"SELECT id, name, sku, unit_price FROM products WHERE id IN ({placeholders}) AND is_active = TRUE",
             product_ids,
         )
-        products = {str(r[0]): {"name": r[1], "sku": r[2], "unit_price": r[3]} for r in cur.fetchall()}
+        products = {str(r[0]): {"name": r[1], "sku": r[2],
+                                "unit_price": r[3]} for r in cur.fetchall()}
 
         missing = [pid for pid in product_ids if pid not in products]
         if missing:
@@ -1300,7 +1389,8 @@ def handle_order_create(args, user=None):
 
         order_number = _generate_number("ORD")
         for _ in range(5):
-            cur.execute("SELECT id FROM orders WHERE order_number = %s", (order_number,))
+            cur.execute(
+                "SELECT id FROM orders WHERE order_number = %s", (order_number,))
             if not cur.fetchone():
                 break
             order_number = _generate_number("ORD")
@@ -1333,7 +1423,8 @@ def handle_order_create(args, user=None):
             cur.execute(
                 """INSERT INTO order_items (order_id, product_id, quantity, unit_price, total_price)
                    VALUES (%s, %s, %s, %s, %s) RETURNING id""",
-                (order_id, oi["product_id"], oi["quantity"], oi["unit_price"], oi["total_price"]),
+                (order_id, oi["product_id"], oi["quantity"],
+                 oi["unit_price"], oi["total_price"]),
             )
             result_items.append({
                 "id": str(cur.fetchone()[0]), "product_name": oi["product_name"],
@@ -1385,7 +1476,8 @@ def handle_order_list(args, user=None):
         conditions.append("o.created_at <= %s")
         params.append(to_date)
     if search:
-        conditions.append("(o.customer_name ILIKE %s OR o.order_number ILIKE %s)")
+        conditions.append(
+            "(o.customer_name ILIKE %s OR o.order_number ILIKE %s)")
         params.extend([f"%{search}%", f"%{search}%"])
 
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
@@ -1463,31 +1555,38 @@ def _deduct_stock_for_order(cur, order_id, warehouse_id, user_id):
     )
     items = cur.fetchall()
     if not warehouse_id:
-        cur.execute("SELECT id FROM warehouses WHERE is_active = TRUE ORDER BY created_at LIMIT 1")
+        cur.execute(
+            "SELECT id FROM warehouses WHERE is_active = TRUE ORDER BY created_at LIMIT 1")
         wh = cur.fetchone()
         if not wh:
             raise ValueError("No active warehouse found")
         warehouse_id = str(wh[0])
 
     for product_id, qty, product_name in items:
-        cur.execute("SELECT id, quantity FROM stock WHERE product_id = %s AND warehouse_id = %s", (str(product_id), warehouse_id))
+        cur.execute("SELECT id, quantity FROM stock WHERE product_id = %s AND warehouse_id = %s", (str(
+            product_id), warehouse_id))
         stock_row = cur.fetchone()
         current_qty = stock_row[1] if stock_row else 0
         if current_qty < qty:
-            raise ValueError(f"Insufficient stock for {product_name}: have {current_qty}, need {qty}")
+            raise ValueError(
+                f"Insufficient stock for {product_name}: have {current_qty}, need {qty}")
         new_qty = current_qty - qty
         if stock_row:
-            cur.execute("UPDATE stock SET quantity = %s, updated_at = NOW() WHERE id = %s", (new_qty, stock_row[0]))
+            cur.execute(
+                "UPDATE stock SET quantity = %s, updated_at = NOW() WHERE id = %s", (new_qty, stock_row[0]))
         else:
-            cur.execute("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (%s, %s, %s)", (str(product_id), warehouse_id, new_qty))
+            cur.execute("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (%s, %s, %s)", (str(
+                product_id), warehouse_id, new_qty))
         cur.execute(
             "INSERT INTO stock_movements (product_id, warehouse_id, movement_type, quantity, reason, performed_by) VALUES (%s, %s, 'deduct', %s, %s, %s)",
-            (str(product_id), warehouse_id, qty, f"Order confirmed (order_id: {order_id})", user_id),
+            (str(product_id), warehouse_id, qty,
+             f"Order confirmed (order_id: {order_id})", user_id),
         )
 
 
 def _restore_stock_for_order(cur, order_id, user_id):
-    cur.execute("SELECT oi.product_id, oi.quantity FROM order_items oi WHERE oi.order_id = %s", (order_id,))
+    cur.execute(
+        "SELECT oi.product_id, oi.quantity FROM order_items oi WHERE oi.order_id = %s", (order_id,))
     items = cur.fetchall()
     cur.execute(
         "SELECT DISTINCT warehouse_id FROM stock_movements WHERE reason LIKE %s AND movement_type = 'deduct' AND warehouse_id IS NOT NULL LIMIT 1",
@@ -1495,24 +1594,29 @@ def _restore_stock_for_order(cur, order_id, user_id):
     )
     wh_row = cur.fetchone()
     if not wh_row:
-        cur.execute("SELECT id FROM warehouses WHERE is_active = TRUE ORDER BY created_at LIMIT 1")
+        cur.execute(
+            "SELECT id FROM warehouses WHERE is_active = TRUE ORDER BY created_at LIMIT 1")
         wh_row = cur.fetchone()
     warehouse_id = str(wh_row[0]) if wh_row else None
     if not warehouse_id:
         return
 
     for product_id, qty in items:
-        cur.execute("SELECT id, quantity FROM stock WHERE product_id = %s AND warehouse_id = %s", (str(product_id), warehouse_id))
+        cur.execute("SELECT id, quantity FROM stock WHERE product_id = %s AND warehouse_id = %s", (str(
+            product_id), warehouse_id))
         stock_row = cur.fetchone()
         current_qty = stock_row[1] if stock_row else 0
         new_qty = current_qty + qty
         if stock_row:
-            cur.execute("UPDATE stock SET quantity = %s, updated_at = NOW() WHERE id = %s", (new_qty, stock_row[0]))
+            cur.execute(
+                "UPDATE stock SET quantity = %s, updated_at = NOW() WHERE id = %s", (new_qty, stock_row[0]))
         else:
-            cur.execute("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (%s, %s, %s)", (str(product_id), warehouse_id, new_qty))
+            cur.execute("INSERT INTO stock (product_id, warehouse_id, quantity) VALUES (%s, %s, %s)", (str(
+                product_id), warehouse_id, new_qty))
         cur.execute(
             "INSERT INTO stock_movements (product_id, warehouse_id, movement_type, quantity, reason, performed_by) VALUES (%s, %s, 'add', %s, %s, %s)",
-            (str(product_id), warehouse_id, qty, f"Order cancelled - stock restored (order_id: {order_id})", user_id),
+            (str(product_id), warehouse_id, qty,
+             f"Order cancelled - stock restored (order_id: {order_id})", user_id),
         )
 
 
@@ -1531,7 +1635,8 @@ def handle_order_update_status(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, status, order_number FROM orders WHERE id = %s", (order_id,))
+        cur.execute(
+            "SELECT id, status, order_number FROM orders WHERE id = %s", (order_id,))
         order = cur.fetchone()
         if not order:
             return {"error": "Order not found"}
@@ -1542,9 +1647,11 @@ def handle_order_update_status(args, user=None):
             return {"error": f"Cannot transition from '{current_status}' to '{new_status}'. Allowed: {', '.join(allowed) if allowed else 'none'}"}
 
         if new_status == "confirmed":
-            _deduct_stock_for_order(cur, order_id, warehouse_id, user["user_id"])
+            _deduct_stock_for_order(
+                cur, order_id, warehouse_id, user["user_id"])
 
-        cur.execute("UPDATE orders SET status = %s, updated_at = NOW() WHERE id = %s", (new_status, order_id))
+        cur.execute(
+            "UPDATE orders SET status = %s, updated_at = NOW() WHERE id = %s", (new_status, order_id))
         cur.execute(
             "INSERT INTO order_status_history (order_id, from_status, to_status, changed_by) VALUES (%s, %s, %s, %s) RETURNING id, created_at",
             (order_id, current_status, new_status, user["user_id"]),
@@ -1580,7 +1687,8 @@ def handle_order_cancel(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, status, order_number, customer_name, total_amount FROM orders WHERE id = %s", (order_id,))
+        cur.execute(
+            "SELECT id, status, order_number, customer_name, total_amount FROM orders WHERE id = %s", (order_id,))
         order = cur.fetchone()
         if not order:
             return {"error": "Order not found"}
@@ -1605,7 +1713,8 @@ def handle_order_cancel(args, user=None):
         if current_status == "confirmed":
             _restore_stock_for_order(cur, order_id, user["user_id"])
 
-        cur.execute("UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = %s", (order_id,))
+        cur.execute(
+            "UPDATE orders SET status = 'cancelled', updated_at = NOW() WHERE id = %s", (order_id,))
         cur.execute(
             "INSERT INTO order_status_history (order_id, from_status, to_status, changed_by) VALUES (%s, %s, 'cancelled', %s) RETURNING created_at",
             (order_id, current_status, user["user_id"]),
@@ -1639,7 +1748,8 @@ def handle_order_history(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, order_number, status FROM orders WHERE id = %s", (order_id,))
+        cur.execute(
+            "SELECT id, order_number, status FROM orders WHERE id = %s", (order_id,))
         order = cur.fetchone()
         if not order:
             return {"error": "Order not found"}
@@ -1667,64 +1777,17 @@ def handle_order_history(args, user=None):
 # ── Invoice Handlers ───────────────────────────────────────────────────
 
 
-def _build_invoice_html(invoice_data, items, order):
-    items_html = ""
-    for i, item in enumerate(items, 1):
-        items_html += f"""
-        <tr>
-            <td>{i}</td>
-            <td>{item['product_name']}<br><small style="color:#666">{item['sku']}</small></td>
-            <td style="text-align:center">{item['quantity']}</td>
-            <td style="text-align:right">₹{item['unit_price']:.2f}</td>
-            <td style="text-align:right">₹{item['total_price']:.2f}</td>
-        </tr>"""
-
-    tax_row = ""
-    if invoice_data["tax_rate"] > 0:
-        tax_row = f"""
-        <tr>
-            <td colspan="4" style="text-align:right"><strong>GST ({invoice_data['tax_rate']}%)</strong></td>
-            <td style="text-align:right">₹{invoice_data['tax_amount']:.2f}</td>
-        </tr>"""
-
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Invoice {invoice_data['invoice_number']}</title>
-<style>
-body {{ font-family: 'Segoe UI', Arial, sans-serif; margin: 40px; color: #333; }}
-.header {{ display: flex; justify-content: space-between; margin-bottom: 30px; }}
-.company {{ font-size: 24px; font-weight: bold; color: #2563eb; }}
-.invoice-title {{ font-size: 28px; color: #1e293b; }}
-.meta {{ display: flex; justify-content: space-between; margin-bottom: 30px; }}
-.meta-block {{ background: #f8fafc; padding: 15px; border-radius: 8px; min-width: 200px; }}
-.meta-block h4 {{ margin: 0 0 8px 0; color: #64748b; font-size: 12px; text-transform: uppercase; }}
-table {{ width: 100%; border-collapse: collapse; margin-bottom: 20px; }}
-th {{ background: #1e293b; color: white; padding: 12px; text-align: left; }}
-td {{ padding: 10px 12px; border-bottom: 1px solid #e2e8f0; }}
-.totals td {{ font-weight: bold; }}
-.footer {{ margin-top: 40px; text-align: center; color: #94a3b8; font-size: 12px; }}
-@media print {{ body {{ margin: 20px; }} }}
-</style></head><body>
-<div class="header"><div class="company">OmniDesk</div><div class="invoice-title">INVOICE</div></div>
-<div class="meta">
-    <div class="meta-block"><h4>Invoice Details</h4><p><strong>{invoice_data['invoice_number']}</strong></p><p>Date: {invoice_data['created_at']}</p><p>Due: {invoice_data['due_date'] or 'On receipt'}</p></div>
-    <div class="meta-block"><h4>Bill To</h4><p><strong>{order['customer_name']}</strong></p><p>{order.get('customer_email') or ''}</p><p>{order.get('customer_phone') or ''}</p></div>
-    <div class="meta-block"><h4>Order Reference</h4><p><strong>{order['order_number']}</strong></p><p>Status: {order['status']}</p></div>
-</div>
-<table><thead><tr><th>#</th><th>Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Unit Price</th><th style="text-align:right">Amount</th></tr></thead>
-<tbody>{items_html}</tbody>
-<tfoot class="totals">
-    <tr><td colspan="4" style="text-align:right"><strong>Subtotal</strong></td><td style="text-align:right">₹{invoice_data['subtotal']:.2f}</td></tr>
-    {tax_row}
-    <tr style="font-size:18px"><td colspan="4" style="text-align:right"><strong>Total</strong></td><td style="text-align:right"><strong>₹{invoice_data['total_amount']:.2f}</strong></td></tr>
-</tfoot></table>
-<div class="footer"><p>Generated by OmniDesk</p></div>
-</body></html>"""
+def _get_org_settings(cur):
+    """Load org_settings as a flat dict."""
+    cur.execute("SELECT setting_key, setting_value FROM org_settings")
+    return {r[0]: r[1] for r in cur.fetchall()}
 
 
 def handle_invoice_generate(args, user=None):
     order_id = args.get("order_id")
     tax_rate = args.get("tax_rate", 0)
     due_date = args.get("due_date")
+    notes = (args.get("notes") or "").strip() or None
 
     if not order_id:
         return {"error": "order_id is required"}
@@ -1738,6 +1801,13 @@ def handle_invoice_generate(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
+
+        # Load org settings + per-invoice overrides
+        settings = _get_org_settings(cur)
+        for key in ("currency_symbol", "tax_label", "payment_terms", "invoice_footer"):
+            if args.get(key):
+                settings[key] = args[key]
+
         cur.execute(
             """SELECT id, order_number, customer_name, customer_email, customer_phone, status, subtotal
                FROM orders WHERE id = %s""",
@@ -1747,9 +1817,11 @@ def handle_invoice_generate(args, user=None):
         if not order:
             return {"error": "Order not found"}
 
-        order_data = {"order_number": order[1], "customer_name": order[2], "customer_email": order[3], "customer_phone": order[4], "status": order[5]}
+        order_data = {"order_number": order[1], "customer_name": order[2],
+                      "customer_email": order[3], "customer_phone": order[4], "status": order[5]}
 
-        cur.execute("SELECT id, invoice_number FROM invoices WHERE order_id = %s", (order_id,))
+        cur.execute(
+            "SELECT id, invoice_number FROM invoices WHERE order_id = %s", (order_id,))
         existing = cur.fetchone()
         if existing:
             return {"error": f"Invoice {existing[1]} already exists for this order"}
@@ -1759,7 +1831,8 @@ def handle_invoice_generate(args, user=None):
                FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = %s""",
             (order_id,),
         )
-        items = [{"product_id": str(r[0]), "product_name": r[1], "sku": r[2], "quantity": r[3], "unit_price": float(r[4]), "total_price": float(r[5])} for r in cur.fetchall()]
+        items = [{"product_id": str(r[0]), "product_name": r[1], "sku": r[2], "quantity": r[3], "unit_price": float(
+            r[4]), "total_price": float(r[5])} for r in cur.fetchall()]
         if not items:
             return {"error": "Order has no items"}
 
@@ -1769,27 +1842,35 @@ def handle_invoice_generate(args, user=None):
 
         invoice_number = _generate_number("INV")
         for _ in range(5):
-            cur.execute("SELECT id FROM invoices WHERE invoice_number = %s", (invoice_number,))
+            cur.execute(
+                "SELECT id FROM invoices WHERE invoice_number = %s", (invoice_number,))
             if not cur.fetchone():
                 break
             invoice_number = _generate_number("INV")
 
         if not due_date:
-            due_date = (datetime.now(timezone.utc) + timedelta(days=30)).strftime("%Y-%m-%d")
+            due_date = (datetime.now(timezone.utc) +
+                        timedelta(days=30)).strftime("%Y-%m-%d")
 
         created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
-        invoice_data = {"invoice_number": invoice_number, "subtotal": subtotal, "tax_rate": tax_rate, "tax_amount": tax_amount, "total_amount": total_amount, "due_date": due_date, "created_at": created_at}
+        invoice_data = {"invoice_number": invoice_number, "subtotal": subtotal, "tax_rate": tax_rate,
+                        "tax_amount": tax_amount, "total_amount": total_amount, "due_date": due_date,
+                        "created_at": created_at, "notes": notes}
 
-        html_content = _build_invoice_html(invoice_data, items, order_data)
-        s3_key = f"invoices/{invoice_number}.html"
+        # Build PDF invoice
+        pdf_bytes = build_invoice_pdf(invoice_data, items, order_data, settings)
+
+        s3_key = f"invoices/{invoice_number}.pdf"
         s3_bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
         s3 = boto3.client("s3", region_name="us-east-1")
-        s3.put_object(Bucket=s3_bucket, Key=s3_key, Body=html_content.encode("utf-8"), ContentType="text/html")
+        s3.put_object(Bucket=s3_bucket, Key=s3_key, Body=pdf_bytes,
+                      ContentType="application/pdf")
 
         cur.execute(
             """INSERT INTO invoices (invoice_number, order_id, pdf_s3_key, subtotal, tax_rate, tax_amount, total_amount, payment_status, status, due_date, created_by)
                VALUES (%s, %s, %s, %s, %s, %s, %s, 'unpaid', 'generated', %s, %s) RETURNING id, created_at""",
-            (invoice_number, order_id, s3_key, subtotal, tax_rate, tax_amount, total_amount, due_date, user["user_id"]),
+            (invoice_number, order_id, s3_key, subtotal, tax_rate,
+             tax_amount, total_amount, due_date, user["user_id"]),
         )
         inv_row = cur.fetchone()
         conn.commit()
@@ -1803,8 +1884,10 @@ def handle_invoice_generate(args, user=None):
             "customer_name": order_data["customer_name"],
             "subtotal": str(subtotal), "tax_rate": str(tax_rate),
             "tax_amount": str(tax_amount), "total_amount": str(total_amount),
+            "currency": settings.get("currency_symbol", "₹"),
+            "tax_label": settings.get("tax_label", "GST"),
             "payment_status": "unpaid", "status": "generated",
-            "due_date": due_date, "created_at": str(inv_row[1]),
+            "format": "pdf", "due_date": due_date, "created_at": str(inv_row[1]),
         }
     except Exception as e:
         conn.rollback()
@@ -1834,7 +1917,8 @@ def handle_invoice_list(args, user=None):
         conditions.append("i.created_at <= %s")
         params.append(to_date)
     if search:
-        conditions.append("(i.invoice_number ILIKE %s OR o.customer_name ILIKE %s OR o.order_number ILIKE %s)")
+        conditions.append(
+            "(i.invoice_number ILIKE %s OR o.customer_name ILIKE %s OR o.order_number ILIKE %s)")
         params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
 
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
@@ -1842,7 +1926,8 @@ def handle_invoice_list(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute(f"SELECT COUNT(*) FROM invoices i JOIN orders o ON i.order_id = o.id {where}", params)
+        cur.execute(
+            f"SELECT COUNT(*) FROM invoices i JOIN orders o ON i.order_id = o.id {where}", params)
         total = cur.fetchone()[0]
         cur.execute(
             f"""SELECT i.id, i.invoice_number, o.order_number, o.customer_name,
@@ -1906,7 +1991,8 @@ def handle_invoice_download(args, user=None):
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, invoice_number, pdf_s3_key FROM invoices WHERE id = %s", (invoice_id,))
+        cur.execute(
+            "SELECT id, invoice_number, pdf_s3_key FROM invoices WHERE id = %s", (invoice_id,))
         row = cur.fetchone()
         if not row:
             return {"error": "Invoice not found"}
@@ -1915,7 +2001,8 @@ def handle_invoice_download(args, user=None):
 
         s3 = boto3.client("s3", region_name="us-east-1")
         bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
-        url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": row[2]}, ExpiresIn=900)
+        url = s3.generate_presigned_url(
+            "get_object", Params={"Bucket": bucket, "Key": row[2]}, ExpiresIn=900)
         return {"invoice_id": str(row[0]), "invoice_number": row[1], "download_url": url, "expires_in": "15 minutes"}
     finally:
         conn.close()
@@ -1942,10 +2029,12 @@ def handle_invoice_send(args, user=None):
 
         s3 = boto3.client("s3", region_name="us-east-1")
         bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
-        url = s3.generate_presigned_url("get_object", Params={"Bucket": bucket, "Key": row[2]}, ExpiresIn=86400)
+        url = s3.generate_presigned_url(
+            "get_object", Params={"Bucket": bucket, "Key": row[2]}, ExpiresIn=86400)
 
         now = datetime.now(timezone.utc)
-        cur.execute("UPDATE invoices SET sent_at = %s, status = 'sent' WHERE id = %s", (now, invoice_id))
+        cur.execute(
+            "UPDATE invoices SET sent_at = %s, status = 'sent' WHERE id = %s", (now, invoice_id))
         conn.commit()
 
         log_action(user["user_id"], "send_invoice", "invoices", entity_id=invoice_id,
@@ -1962,6 +2051,74 @@ def handle_invoice_send(args, user=None):
         else:
             result["email_note"] = "No customer email on file. Share the download link directly."
         return result
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+# ── Org Settings Handlers ─────────────────────────────────────────────
+
+
+def handle_org_settings_get(args, user=None):
+    """Return all org settings as a readable dict."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        settings = _get_org_settings(cur)
+        return {
+            "settings": settings,
+            "available_keys": [
+                "company_name", "company_address", "company_phone", "company_email",
+                "company_logo_s3_key", "currency_code", "currency_symbol",
+                "tax_label", "payment_terms", "invoice_footer", "locale",
+            ],
+            "supported_currencies": {
+                "INR": "₹", "USD": "$", "EUR": "€", "GBP": "£", "AED": "AED", "SGD": "S$",
+            },
+            "supported_tax_labels": ["GST", "VAT", "Sales Tax", "Tax"],
+            "supported_locales": ["en-IN", "en-US", "en-GB", "en-EU", "en-AE", "en-SG"],
+        }
+    finally:
+        conn.close()
+
+
+def handle_org_settings_update(args, user=None):
+    """Update one or more org settings."""
+    updates = args.get("settings", {})
+    if not updates or not isinstance(updates, dict):
+        return {"error": "Provide 'settings' as a key-value object"}
+
+    valid_keys = {
+        "company_name", "company_address", "company_phone", "company_email",
+        "company_logo_s3_key", "currency_code", "currency_symbol",
+        "tax_label", "payment_terms", "invoice_footer", "locale",
+    }
+    invalid = set(updates.keys()) - valid_keys
+    if invalid:
+        return {"error": f"Invalid setting keys: {', '.join(invalid)}. Valid: {', '.join(sorted(valid_keys))}"}
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        updated = []
+        for key, value in updates.items():
+            cur.execute(
+                """INSERT INTO org_settings (setting_key, setting_value, updated_at, updated_by)
+                   VALUES (%s, %s, NOW(), %s)
+                   ON CONFLICT (setting_key) DO UPDATE SET setting_value = %s, updated_at = NOW(), updated_by = %s""",
+                (key, str(value), user["user_id"], str(value), user["user_id"]),
+            )
+            updated.append(key)
+        conn.commit()
+
+        log_action(user["user_id"], "update_org_settings", "org_settings",
+                   details={"updated_keys": updated})
+
+        # Return fresh settings
+        settings = _get_org_settings(cur)
+        return {"updated": updated, "settings": settings}
     except Exception as e:
         conn.rollback()
         return {"error": str(e)}
@@ -1998,6 +2155,8 @@ TOOL_HANDLERS = {
     "invoice_get": handle_invoice_get,
     "invoice_download": handle_invoice_download,
     "invoice_send": handle_invoice_send,
+    "org_settings_get": handle_org_settings_get,
+    "org_settings_update": handle_org_settings_update,
 }
 
 # ── JSON-RPC Helpers ────────────────────────────────────────────────────
@@ -2016,7 +2175,8 @@ def jsonrpc_error(req_id, code, message):
         "statusCode": 200,
         "headers": CORS_HEADERS,
         "body": json.dumps(
-            {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
+            {"jsonrpc": "2.0", "id": req_id, "error": {
+                "code": code, "message": message}}
         ),
     }
 
@@ -2078,12 +2238,14 @@ def lambda_handler(event, context):
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
-    method = event.get("httpMethod") or event.get("requestContext", {}).get("http", {}).get("method", "")
+    method = event.get("httpMethod") or event.get(
+        "requestContext", {}).get("http", {}).get("method", "")
     headers = event.get("headers") or {}
     body_raw = event.get("body") or ""
 
     # Log every request for debugging connector issues
-    logger.info(f"MCP REQUEST: method={method}, header_keys={list(headers.keys())}, body_preview={str(body_raw)[:200]}")
+    logger.info(
+        f"MCP REQUEST: method={method}, header_keys={list(headers.keys())}, body_preview={str(body_raw)[:200]}")
 
     if method == "OPTIONS":
         return {"statusCode": 204, "headers": CORS_HEADERS, "body": ""}
@@ -2151,8 +2313,14 @@ def lambda_handler(event, context):
 
             result = handler(arguments, user=user)
 
+            # If handler returns pre-formatted markdown, pass it directly
+            if isinstance(result, dict) and "text" in result and len(result) == 1:
+                display_text = result["text"]
+            else:
+                display_text = json.dumps(result, default=str)
+
             return jsonrpc_response(req_id, {
-                "content": [{"type": "text", "text": json.dumps(result, default=str)}],
+                "content": [{"type": "text", "text": display_text}],
             })
         except Exception as e:
             return jsonrpc_response(req_id, {
