@@ -1,0 +1,77 @@
+name: Deploy Lambdas
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'lambdas/**'
+      - 'utils/**'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_REGION: us-east-1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Package each Lambda: copy handler as lambda_function.py + utils/
+      - name: Package auth-register
+        run: |
+          mkdir -p /tmp/deploy/auth-register
+          cp lambdas/auth/register.py /tmp/deploy/auth-register/lambda_function.py
+          cp -r utils /tmp/deploy/auth-register/utils
+          cd /tmp/deploy/auth-register && zip -r /tmp/omnidesk-auth-register.zip .
+
+      - name: Package auth-login
+        run: |
+          mkdir -p /tmp/deploy/auth-login
+          cp lambdas/auth/login.py /tmp/deploy/auth-login/lambda_function.py
+          cp -r utils /tmp/deploy/auth-login/utils
+          cd /tmp/deploy/auth-login && zip -r /tmp/omnidesk-auth-login.zip .
+
+      - name: Package auth-me
+        run: |
+          mkdir -p /tmp/deploy/auth-me
+          cp lambdas/auth/me.py /tmp/deploy/auth-me/lambda_function.py
+          cp -r utils /tmp/deploy/auth-me/utils
+          cd /tmp/deploy/auth-me && zip -r /tmp/omnidesk-auth-me.zip .
+
+      - name: Package mcp-server
+        run: |
+          mkdir -p /tmp/deploy/mcp-server
+          cp lambdas/mcp/server.py /tmp/deploy/mcp-server/lambda_function.py
+          cd /tmp/deploy/mcp-server && zip -r /tmp/omnidesk-mcp-server.zip .
+
+      # Deploy all functions
+      - name: Deploy auth-register
+        run: |
+          aws lambda update-function-code \
+            --function-name omnidesk-auth-register \
+            --zip-file fileb:///tmp/omnidesk-auth-register.zip
+
+      - name: Deploy auth-login
+        run: |
+          aws lambda update-function-code \
+            --function-name omnidesk-auth-login \
+            --zip-file fileb:///tmp/omnidesk-auth-login.zip
+
+      - name: Deploy auth-me
+        run: |
+          aws lambda update-function-code \
+            --function-name omnidesk-auth-me \
+            --zip-file fileb:///tmp/omnidesk-auth-me.zip
+
+      - name: Deploy mcp-server
+        run: |
+          aws lambda update-function-code \
+            --function-name omnidesk-mcp-server \
+            --zip-file fileb:///tmp/omnidesk-mcp-server.zip
