@@ -412,16 +412,33 @@ TOOLS = [
     # ── Reports ──────────────────────────────────────────────────────
     {
         "name": "report_generate",
-        "description": "Generate a professional HTML report with charts. Supported types: sales, stock, invoice_summary. Reports include markdown tables + Chart.js visualizations, hosted on S3. Example: 'Generate a sales report for the last 30 days'. Requires manager role.",
+        "description": "Generate a professional HTML report hosted on S3. Two modes:\n"
+                       "1. PRESET: pass report_type (sales|stock|invoice_summary) — auto-queries DB and builds components.\n"
+                       "2. CUSTOM: pass title + components array — build ANY report from data you've gathered.\n\n"
+                       "Component types you can use in the components array:\n"
+                       "- summary_cards: {type:'summary_cards', cards:[{label, value, icon}]}\n"
+                       "- table: {type:'table', id, title, columns:[{name, badges?:{value:color}}], rows:[[...]], filterable_columns?:[idx], page_size?:15}\n"
+                       "- chart: {type:'chart', id, title, chart_type:'line'|'bar'|'doughnut'|'pie'|'radar', data:{labels, datasets}}\n"
+                       "- text: {type:'text', title?, content:'markdown text'}\n"
+                       "- grid: {type:'grid', children:[...components]} for side-by-side layout\n\n"
+                       "Tables support search, column filters, sorting, pagination, and status badges.\n"
+                       "Use CUSTOM mode to build reports from any query results — customer analysis, product performance, warehouse comparison, etc.\n"
+                       "Requires manager role.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "report_type": {"type": "string", "enum": ["sales", "stock", "invoice_summary"], "description": "Type of report to generate"},
+                "report_type": {"type": "string", "description": "Preset type: sales, stock, or invoice_summary. Omit for custom reports."},
                 "from_date": {"type": "string", "description": "Start date YYYY-MM-DD (default: 30 days ago)"},
                 "to_date": {"type": "string", "description": "End date YYYY-MM-DD (default: today)"},
-                "filters": {"type": "object", "description": "Optional filters (e.g. category_id for sales, warehouse_id for stock)"},
+                "filters": {"type": "object", "description": "Optional filters (e.g. warehouse_id for stock)"},
+                "title": {"type": "string", "description": "Report title (required for custom reports)"},
+                "subtitle": {"type": "string", "description": "Report subtitle (optional)"},
+                "components": {
+                    "type": "array",
+                    "description": "Array of component objects for custom reports. Each has a 'type' field (summary_cards, table, chart, text, grid) plus type-specific fields. Query data first, then build components from the results.",
+                    "items": {"type": "object"},
+                },
             },
-            "required": ["report_type"],
         },
     },
     {
@@ -430,7 +447,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "report_type": {"type": "string", "enum": ["sales", "stock", "invoice_summary"], "description": "Filter by report type"},
+                "report_type": {"type": "string", "description": "Filter by report type (e.g. sales, stock, invoice_summary, custom)"},
                 "page": {"type": "integer", "description": "Page number (default 1)"},
                 "limit": {"type": "integer", "description": "Items per page (default 20)"},
             },
@@ -790,7 +807,8 @@ def handle_omnidesk_help(args, user=None):
             "title": "Reports",
             "tools": [
                 {"command": "report_generate",
-                    "description": "Generate sales/stock/invoice report (manager+)", "example": "Generate a sales report for March"},
+                    "description": "Generate preset (sales/stock/invoice) or fully custom reports with charts, tables, cards (manager+)",
+                    "example": "Generate a sales report for March | Build a custom report showing top customers by revenue"},
                 {"command": "report_list", "description": "List generated reports",
                     "example": "Show me all reports"},
                 {"command": "report_get", "description": "Get report with download link",
@@ -2315,40 +2333,53 @@ def handle_org_settings_update(args, user=None):
 
 
 def handle_report_generate(args, user=None):
-    """Generate a report, upload to S3, return URL."""
+    """Generate a component-based report, upload to S3, return URL."""
     from datetime import timedelta
+    from utils.report_templates import REPORT_BUILDERS as _BUILDERS
     report_type = (args.get("report_type") or "").strip().lower()
     valid_types = {"sales", "stock", "invoice_summary"}
-    if report_type not in valid_types:
-        return {"error": f"Invalid report_type. Must be one of: {', '.join(valid_types)}"}
+
+    # Support custom components from AI
+    custom_components = args.get("components")
+    custom_title = args.get("title")
+
+    S3_BUCKET = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
+    s3_client = boto3.client("s3", region_name="us-east-1")
 
     to_date = args.get("to_date") or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     from_date = args.get("from_date") or (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
     filters = args.get("filters") or {}
 
-    S3_BUCKET = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
-    s3_client = boto3.client("s3", region_name="us-east-1")
+    if custom_components and custom_title:
+        components = custom_components
+        subtitle = args.get("subtitle", "Custom Report")
+        title = custom_title
+        report_type = report_type or "custom"
+    elif report_type in valid_types:
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            builder = _BUILDERS[report_type]
+            components, subtitle = builder(cur, from_date, to_date, filters)
+            title = f"{report_type.replace('_', ' ').title()} Report"
+        finally:
+            conn.close()
+    else:
+        return {"error": f"Provide a valid report_type ({', '.join(valid_types)}) or custom components with title"}
+
+    html = build_report_html(title, components, subtitle)
+
+    date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
+    rand_part = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+    report_number = f"RPT-{date_part}-{rand_part}"
+    s3_key = f"reports/{report_number}.html"
+
+    s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=html.encode("utf-8"), ContentType="text/html")
+    url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": s3_key}, ExpiresIn=900)
 
     conn = get_connection()
     try:
         cur = conn.cursor()
-
-        # Import report builders inline to keep MCP server self-contained
-        md, charts, subtitle = _build_mcp_report(cur, report_type, from_date, to_date, filters)
-
-        title = f"{report_type.replace('_', ' ').title()} Report"
-        html = build_report_html(title, md, charts, subtitle)
-
-        # Upload to S3
-        date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
-        rand_part = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
-        report_number = f"RPT-{date_part}-{rand_part}"
-        s3_key = f"reports/{report_number}.html"
-
-        s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=html.encode("utf-8"), ContentType="text/html")
-        url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": s3_key}, ExpiresIn=900)
-
-        # Save to DB
         cur.execute(
             """INSERT INTO reports (title, report_type, s3_key, source_module, filters, generated_by)
                VALUES (%s, %s, %s, %s, %s, %s) RETURNING id, created_at""",
@@ -2378,193 +2409,6 @@ def handle_report_generate(args, user=None):
         return {"error": f"Failed to generate report: {str(e)}"}
     finally:
         conn.close()
-
-
-def _build_mcp_report(cur, report_type, from_date, to_date, filters):
-    """Build report markdown + charts for MCP handler."""
-    if report_type == "sales":
-        return _build_mcp_sales(cur, from_date, to_date, filters)
-    elif report_type == "stock":
-        return _build_mcp_stock(cur, from_date, to_date, filters)
-    elif report_type == "invoice_summary":
-        return _build_mcp_invoice(cur, from_date, to_date, filters)
-    return "No data", [], ""
-
-
-def _build_mcp_sales(cur, from_date, to_date, filters):
-    cur.execute(
-        """SELECT COUNT(*), COALESCE(SUM(total_amount), 0)
-           FROM orders WHERE status != 'cancelled'
-           AND created_at >= %s AND created_at < %s""",
-        (from_date, to_date),
-    )
-    order_count, total_revenue = cur.fetchone()
-
-    cur.execute(
-        """SELECT p.name, p.sku, SUM(oi.quantity) as qty, SUM(oi.total_price) as rev
-           FROM order_items oi JOIN orders o ON oi.order_id = o.id
-           JOIN products p ON oi.product_id = p.id
-           WHERE o.status != 'cancelled' AND o.created_at >= %s AND o.created_at < %s
-           GROUP BY p.id, p.name, p.sku ORDER BY rev DESC LIMIT 5""",
-        (from_date, to_date),
-    )
-    top_products = cur.fetchall()
-
-    cur.execute(
-        """SELECT DATE(created_at) as day, COUNT(*), COALESCE(SUM(total_amount), 0)
-           FROM orders WHERE status != 'cancelled'
-           AND created_at >= %s AND created_at < %s
-           GROUP BY DATE(created_at) ORDER BY day""",
-        (from_date, to_date),
-    )
-    daily = cur.fetchall()
-
-    md = f"""# Sales Summary
-
-| Metric | Value |
-|--------|-------|
-| **Total Orders** | {order_count} |
-| **Total Revenue** | Rs. {total_revenue:,.2f} |
-| **Period** | {from_date} to {to_date} |
-
-# Top 5 Products by Revenue
-
-"""
-    if top_products:
-        md += "| # | Product | SKU | Qty Sold | Revenue |\n|---|---------|-----|----------|---------|\\n"
-        for i, (name, sku, qty, rev) in enumerate(top_products, 1):
-            md += f"| {i} | {name} | {sku} | {qty} | Rs. {rev:,.2f} |\\n"
-    else:
-        md += "> No sales data for this period.\\n"
-
-    charts = []
-    if daily:
-        charts.append({
-            "id": "daily-revenue-chart", "type": "line",
-            "data": {
-                "labels": [str(d[0]) for d in daily],
-                "datasets": [{"label": "Daily Revenue (Rs.)", "data": [float(d[2]) for d in daily],
-                              "borderColor": "#1a73e8", "backgroundColor": "rgba(26,115,232,0.1)", "fill": True, "tension": 0.3}],
-            },
-            "options": {"responsive": True, "plugins": {"title": {"display": True, "text": "Daily Revenue Trend"}}},
-        })
-    if top_products:
-        charts.append({
-            "id": "top-products-chart", "type": "bar",
-            "data": {
-                "labels": [p[0][:20] for p in top_products],
-                "datasets": [{"label": "Revenue (Rs.)", "data": [float(p[3]) for p in top_products],
-                              "backgroundColor": ["#1a73e8", "#34a853", "#fbbc04", "#ea4335", "#9334e6"]}],
-            },
-            "options": {"responsive": True, "plugins": {"title": {"display": True, "text": "Top 5 Products by Revenue"}}},
-        })
-
-    return md, charts, f"Sales Report • {from_date} to {to_date}"
-
-
-def _build_mcp_stock(cur, from_date, to_date, filters):
-    warehouse_id = filters.get("warehouse_id")
-    wh_filter = "AND s.warehouse_id = %s" if warehouse_id else ""
-    wh_params = [warehouse_id] if warehouse_id else []
-
-    cur.execute(
-        f"""SELECT p.name, p.sku, s.quantity, s.low_stock_threshold, w.name as wh_name
-            FROM stock s JOIN products p ON s.product_id = p.id
-            LEFT JOIN warehouses w ON s.warehouse_id = w.id
-            WHERE p.is_active = TRUE {wh_filter}
-            ORDER BY s.quantity ASC LIMIT 50""",
-        wh_params,
-    )
-    stock_rows = cur.fetchall()
-
-    cur.execute(
-        f"""SELECT COUNT(*) FROM stock s JOIN products p ON s.product_id = p.id
-            WHERE p.is_active = TRUE AND s.quantity < s.low_stock_threshold {wh_filter}""",
-        wh_params,
-    )
-    low_stock_count = cur.fetchone()[0]
-
-    cur.execute(
-        f"SELECT COUNT(*), COALESCE(SUM(quantity), 0) FROM stock s WHERE 1=1 {wh_filter}",
-        wh_params,
-    )
-    total_entries, total_qty = cur.fetchone()
-
-    md = f"""# Stock Summary
-
-| Metric | Value |
-|--------|-------|
-| **Total Stock Entries** | {total_entries} |
-| **Total Units** | {total_qty:,} |
-| **Low Stock Alerts** | {low_stock_count} |
-
-# Stock Levels
-
-| Product | SKU | Quantity | Threshold | Warehouse | Status |
-|---------|-----|----------|-----------|-----------|--------|
-"""
-    healthy, low, critical = 0, 0, 0
-    for name, sku, qty, threshold, wh in stock_rows:
-        if qty < threshold:
-            if qty == 0:
-                status, critical = "Critical", critical + 1
-            else:
-                status, low = "Low", low + 1
-        else:
-            status, healthy = "OK", healthy + 1
-        md += f"| {name} | {sku} | {qty} | {threshold} | {wh or '-'} | {status} |\\n"
-
-    charts = []
-    if stock_rows:
-        charts.append({
-            "id": "stock-status-chart", "type": "doughnut",
-            "data": {"labels": ["Healthy", "Low", "Critical"],
-                     "datasets": [{"data": [healthy, low, critical], "backgroundColor": ["#34a853", "#fbbc04", "#ea4335"]}]},
-            "options": {"responsive": True, "plugins": {"title": {"display": True, "text": "Stock Health Distribution"}}},
-        })
-
-    return md, charts, "Stock Report"
-
-
-def _build_mcp_invoice(cur, from_date, to_date, filters):
-    cur.execute(
-        """SELECT payment_status, COUNT(*), COALESCE(SUM(total_amount), 0)
-           FROM invoices WHERE 1=1
-           AND created_at >= %s AND created_at < %s
-           GROUP BY payment_status""",
-        (from_date, to_date),
-    )
-    status_rows = cur.fetchall()
-    total_invoices = sum(r[1] for r in status_rows)
-    total_amount = sum(r[2] for r in status_rows)
-
-    md = f"""# Invoice Summary
-
-| Metric | Value |
-|--------|-------|
-| **Total Invoices** | {total_invoices} |
-| **Total Amount** | Rs. {total_amount:,.2f} |
-| **Period** | {from_date} to {to_date} |
-
-# Payment Status Breakdown
-
-| Status | Count | Amount |
-|--------|-------|--------|
-"""
-    for status, count, amount in status_rows:
-        md += f"| {status.title()} | {count} | Rs. {amount:,.2f} |\\n"
-
-    charts = []
-    if status_rows:
-        charts.append({
-            "id": "payment-status-chart", "type": "doughnut",
-            "data": {"labels": [r[0].title() for r in status_rows],
-                     "datasets": [{"data": [float(r[2]) for r in status_rows],
-                                   "backgroundColor": ["#34a853", "#ea4335", "#fbbc04", "#9334e6"]}]},
-            "options": {"responsive": True, "plugins": {"title": {"display": True, "text": "Invoice Amount by Payment Status"}}},
-        })
-
-    return md, charts, f"Invoice Summary • {from_date} to {to_date}"
 
 
 def handle_report_list(args, user=None):
