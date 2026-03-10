@@ -15,7 +15,9 @@ Usage:
     ]
     html = build_report_html("Sales Report", components, subtitle="March 2026")
 """
+import base64
 import json
+import re
 from datetime import datetime
 
 
@@ -27,20 +29,36 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{title} — OmniDesk Report</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <style>
+  :root {{
+    --clr-primary: #4a6274;
+    --clr-primary-dark: #354856;
+    --clr-accent: #6b8f71;
+    --clr-accent-warm: #c27c5e;
+    --clr-bg: #f7f5f2;
+    --clr-surface: #ffffff;
+    --clr-text: #2d2a26;
+    --clr-text-muted: #6b6560;
+    --clr-border: #e6e2dd;
+    --clr-hover: #f0ece7;
+    --clr-up: #5a8a5e;
+    --clr-down: #b5694d;
+  }}
+
   * {{ margin: 0; padding: 0; box-sizing: border-box; }}
 
   body {{
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
-    background: #f0f2f5; color: #1a1a2e; line-height: 1.6;
-    max-width: 1100px; margin: 0 auto; padding: 24px 16px;
+    background: var(--clr-bg); color: var(--clr-text); line-height: 1.6;
+    width: 92%; max-width: 1800px; margin: 0 auto; padding: 28px 24px;
   }}
 
   /* ── Header ── */
   .rpt-header {{
-    background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
+    background: linear-gradient(135deg, var(--clr-primary) 0%, var(--clr-primary-dark) 100%);
     color: #fff; padding: 32px 36px; border-radius: 14px;
     margin-bottom: 28px; position: relative; overflow: hidden;
   }}
@@ -54,36 +72,43 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   /* ── Summary Cards ── */
   .rpt-cards {{
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 16px; margin-bottom: 28px;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 18px; margin-bottom: 28px;
+  }}
+  @media (min-width: 1100px) {{
+    .rpt-cards {{ grid-template-columns: repeat(4, 1fr); }}
   }}
   .rpt-card {{
-    background: #fff; border-radius: 12px; padding: 20px 24px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.06); border: 1px solid #e8eaed;
-    transition: box-shadow 0.2s;
+    background: var(--clr-surface); border-radius: 12px; padding: 20px 24px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05); border: 1px solid var(--clr-border);
+    transition: box-shadow 0.2s, transform 0.2s;
   }}
-  .rpt-card:hover {{ box-shadow: 0 4px 12px rgba(0,0,0,0.1); }}
-  .rpt-card .card-icon {{ font-size: 1.6em; margin-bottom: 8px; }}
+  .rpt-card:hover {{ box-shadow: 0 4px 14px rgba(0,0,0,0.08); transform: translateY(-1px); }}
+  .rpt-card .card-header {{
+    display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+  }}
+  .rpt-card .card-icon {{ font-size: 1.15em; color: var(--clr-accent-warm); line-height: 1; }}
+  .rpt-card .card-icon i {{ opacity: 0.85; }}
+  .rpt-card .card-label {{ font-size: 0.85em; color: var(--clr-text-muted); font-weight: 600; text-transform: capitalize; }}
   .rpt-card .card-value {{
-    font-size: 1.6em; font-weight: 700; color: #1a73e8; margin-bottom: 2px;
+    font-size: 1.6em; font-weight: 700; color: var(--clr-primary); margin-bottom: 2px;
   }}
-  .rpt-card .card-label {{ font-size: 0.85em; color: #5f6368; font-weight: 500; }}
   .rpt-card .card-change {{
     font-size: 0.8em; margin-top: 4px; font-weight: 600;
   }}
-  .rpt-card .card-change.up {{ color: #34a853; }}
-  .rpt-card .card-change.down {{ color: #ea4335; }}
+  .rpt-card .card-change.up {{ color: var(--clr-up); }}
+  .rpt-card .card-change.down {{ color: var(--clr-down); }}
 
   /* ── Section (generic wrapper) ── */
   .rpt-section {{
-    background: #fff; border-radius: 12px; padding: 28px 32px;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.06); border: 1px solid #e8eaed;
+    background: var(--clr-surface); border-radius: 12px; padding: 28px 32px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.05); border: 1px solid var(--clr-border);
     margin-bottom: 24px;
   }}
   .rpt-section-title {{
-    font-size: 1.15em; font-weight: 700; color: #1a1a2e;
+    font-size: 1.15em; font-weight: 700; color: var(--clr-text);
     margin-bottom: 16px; padding-bottom: 10px;
-    border-bottom: 2px solid #e8eaed;
+    border-bottom: 2px solid var(--clr-border);
   }}
 
   /* ── Chart ── */
@@ -101,7 +126,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     font-size: 0.9em; font-family: inherit;
     transition: border-color 0.2s;
   }}
-  .rpt-search:focus {{ outline: none; border-color: #1a73e8; box-shadow: 0 0 0 3px rgba(26,115,232,0.12); }}
+  .rpt-search:focus {{ outline: none; border-color: var(--clr-primary); box-shadow: 0 0 0 3px rgba(74,98,116,0.12); }}
   .rpt-filter-select {{
     padding: 8px 12px; border: 1.5px solid #dadce0; border-radius: 8px;
     font-size: 0.85em; font-family: inherit; background: #fff; cursor: pointer;
@@ -112,34 +137,34 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     font-size: 0.9em;
   }}
   .rpt-table thead th {{
-    background: #f8f9fa; color: #1a1a2e; text-align: left;
+    background: #f5f3f0; color: var(--clr-text); text-align: left;
     padding: 11px 14px; font-weight: 600; font-size: 0.85em;
     text-transform: uppercase; letter-spacing: 0.3px;
-    border-bottom: 2px solid #e8eaed; cursor: pointer;
+    border-bottom: 2px solid var(--clr-border); cursor: pointer;
     user-select: none; white-space: nowrap;
     position: sticky; top: 0;
   }}
-  .rpt-table thead th:hover {{ background: #e8eaed; }}
+  .rpt-table thead th:hover {{ background: var(--clr-hover); }}
   .rpt-table thead th .sort-icon {{ margin-left: 4px; opacity: 0.4; font-size: 0.8em; }}
-  .rpt-table thead th .sort-icon.active {{ opacity: 1; color: #1a73e8; }}
+  .rpt-table thead th .sort-icon.active {{ opacity: 1; color: var(--clr-primary); }}
   .rpt-table tbody td {{
-    padding: 10px 14px; border-bottom: 1px solid #f0f0f0;
-    color: #333;
+    padding: 10px 14px; border-bottom: 1px solid #ece8e3;
+    color: #3d3a36;
   }}
-  .rpt-table tbody tr:hover {{ background: #f0f6ff; }}
-  .rpt-table tbody tr:nth-child(even) {{ background: #fafbfc; }}
-  .rpt-table tbody tr:nth-child(even):hover {{ background: #f0f6ff; }}
+  .rpt-table tbody tr:hover {{ background: var(--clr-hover); }}
+  .rpt-table tbody tr:nth-child(even) {{ background: #faf8f6; }}
+  .rpt-table tbody tr:nth-child(even):hover {{ background: var(--clr-hover); }}
 
   /* Status badges */
   .badge {{
     display: inline-block; padding: 3px 10px; border-radius: 12px;
     font-size: 0.8em; font-weight: 600; text-transform: capitalize;
   }}
-  .badge-green {{ background: #e6f4ea; color: #1e8e3e; }}
-  .badge-yellow {{ background: #fef7e0; color: #b06000; }}
-  .badge-red {{ background: #fce8e6; color: #c5221f; }}
-  .badge-blue {{ background: #e8f0fe; color: #1a73e8; }}
-  .badge-gray {{ background: #f1f3f4; color: #5f6368; }}
+  .badge-green {{ background: #e8f0e4; color: #4a7a4e; }}
+  .badge-yellow {{ background: #f5efe0; color: #8a6d3b; }}
+  .badge-red {{ background: #f3e5e0; color: #9c5040; }}
+  .badge-blue {{ background: #e4ecf2; color: #4a6274; }}
+  .badge-gray {{ background: #efece8; color: #6b6560; }}
 
   /* Pagination */
   .rpt-pagination {{
@@ -153,22 +178,22 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     background: #fff; cursor: pointer; font-family: inherit; font-size: 0.9em;
     transition: all 0.15s;
   }}
-  .rpt-page-btn:hover {{ background: #f0f6ff; border-color: #1a73e8; }}
-  .rpt-page-btn.active {{ background: #1a73e8; color: #fff; border-color: #1a73e8; }}
+  .rpt-page-btn:hover {{ background: var(--clr-hover); border-color: var(--clr-primary); }}
+  .rpt-page-btn.active {{ background: var(--clr-primary); color: #fff; border-color: var(--clr-primary); }}
   .rpt-page-btn:disabled {{ opacity: 0.4; cursor: not-allowed; }}
 
   /* ── Text (markdown) ── */
-  .rpt-text h1 {{ font-size: 1.4em; color: #1a73e8; margin: 16px 0 10px; }}
-  .rpt-text h2 {{ font-size: 1.2em; color: #333; margin: 14px 0 8px; }}
-  .rpt-text h3 {{ font-size: 1.05em; color: #555; margin: 12px 0 6px; }}
+  .rpt-text h1 {{ font-size: 1.4em; color: var(--clr-primary); margin: 16px 0 10px; }}
+  .rpt-text h2 {{ font-size: 1.2em; color: var(--clr-text); margin: 14px 0 8px; }}
+  .rpt-text h3 {{ font-size: 1.05em; color: var(--clr-text-muted); margin: 12px 0 6px; }}
   .rpt-text p {{ margin: 8px 0; }}
   .rpt-text ul, .rpt-text ol {{ padding-left: 24px; margin: 8px 0; }}
   .rpt-text blockquote {{
-    border-left: 4px solid #1a73e8; padding: 10px 16px;
-    background: #f0f6ff; margin: 12px 0; border-radius: 0 8px 8px 0;
+    border-left: 4px solid var(--clr-accent-warm); padding: 10px 16px;
+    background: #f5f0eb; margin: 12px 0; border-radius: 0 8px 8px 0;
   }}
-  .rpt-text code {{ background: #f1f3f4; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }}
-  .rpt-text strong {{ color: #1a73e8; }}
+  .rpt-text code {{ background: #efece8; padding: 2px 6px; border-radius: 4px; font-size: 0.9em; }}
+  .rpt-text strong {{ color: var(--clr-primary-dark); }}
 
   /* ── Grid layout for side-by-side charts ── */
   .rpt-grid {{
@@ -179,12 +204,12 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
   /* ── Footer ── */
   .rpt-footer {{
-    text-align: center; padding: 20px; color: #999; font-size: 0.82em;
+    text-align: center; padding: 20px; color: var(--clr-text-muted); font-size: 0.82em;
   }}
 
   /* ── Print ── */
   @media print {{
-    body {{ background: #fff; padding: 0; max-width: 100%; }}
+    body {{ background: #fff; padding: 0; width: 100%; max-width: 100%; }}
     .rpt-header {{ -webkit-print-color-adjust: exact; print-color-adjust: exact; border-radius: 0; }}
     .rpt-section {{ box-shadow: none; border: 1px solid #ddd; break-inside: avoid; }}
     .rpt-search, .rpt-filter-select, .rpt-page-btns {{ display: none; }}
@@ -196,7 +221,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
     body {{ padding: 12px 8px; }}
     .rpt-header {{ padding: 24px 20px; }}
     .rpt-section {{ padding: 20px 16px; }}
-    .rpt-cards {{ grid-template-columns: 1fr 1fr; }}
+    .rpt-cards {{ grid-template-columns: repeat(2, 1fr); }}
     .rpt-grid {{ grid-template-columns: 1fr; }}
   }}
 </style>
@@ -216,8 +241,16 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
 <script>
 // ── Markdown renderer ──
-document.querySelectorAll('[data-markdown]').forEach(function(el) {{
-  el.innerHTML = marked.parse(el.getAttribute('data-markdown'));
+document.querySelectorAll('[data-markdown-b64]').forEach(function(el) {{
+  try {{
+    var raw = atob(el.getAttribute('data-markdown-b64'));
+    var bytes = new Uint8Array(raw.length);
+    for (var i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+    var content = new TextDecoder('utf-8').decode(bytes);
+    el.innerHTML = marked.parse(content);
+  }} catch(e) {{
+    el.textContent = 'Error rendering content';
+  }}
 }});
 
 // ── Chart renderer ──
@@ -417,6 +450,194 @@ tableConfigs.forEach(function(tbl) {{
 </html>"""
 
 
+# ── Icon Mapping (Lucide / common names → Font Awesome 6) ───────────
+
+_ICON_MAP = {
+    # Finance & Revenue
+    "trending-up": "fa-arrow-trend-up",
+    "trending-down": "fa-arrow-trend-down",
+    "indian-rupee": "fa-indian-rupee-sign",
+    "rupee": "fa-indian-rupee-sign",
+    "dollar": "fa-dollar-sign",
+    "money": "fa-money-bill-wave",
+    "wallet": "fa-wallet",
+    "credit-card": "fa-credit-card",
+    "coins": "fa-coins",
+    "piggy-bank": "fa-piggy-bank",
+    # Shopping & Orders
+    "shopping-cart": "fa-cart-shopping",
+    "cart": "fa-cart-shopping",
+    "shopping-bag": "fa-bag-shopping",
+    "bag": "fa-bag-shopping",
+    "receipt": "fa-receipt",
+    "barcode": "fa-barcode",
+    # People
+    "users": "fa-users",
+    "user": "fa-user",
+    "user-plus": "fa-user-plus",
+    "people": "fa-people-group",
+    # Documents & Files
+    "file-text": "fa-file-lines",
+    "file": "fa-file",
+    "file-invoice": "fa-file-invoice",
+    "file-pdf": "fa-file-pdf",
+    "clipboard": "fa-clipboard-list",
+    "document": "fa-file-lines",
+    # Alerts & Status
+    "alert-circle": "fa-circle-exclamation",
+    "alert-triangle": "fa-triangle-exclamation",
+    "warning": "fa-triangle-exclamation",
+    "check-circle": "fa-circle-check",
+    "check": "fa-check",
+    "info": "fa-circle-info",
+    "bell": "fa-bell",
+    "ban": "fa-ban",
+    # Inventory & Products
+    "package": "fa-box",
+    "packages": "fa-boxes-stacked",
+    "box": "fa-box",
+    "boxes": "fa-boxes-stacked",
+    "warehouse": "fa-warehouse",
+    "truck": "fa-truck",
+    "shipping": "fa-truck-fast",
+    "tag": "fa-tag",
+    "tags": "fa-tags",
+    # Charts & Analytics
+    "bar-chart": "fa-chart-bar",
+    "chart": "fa-chart-line",
+    "pie-chart": "fa-chart-pie",
+    "activity": "fa-chart-line",
+    "analytics": "fa-chart-column",
+    # Misc
+    "calendar": "fa-calendar-days",
+    "clock": "fa-clock",
+    "globe": "fa-globe",
+    "star": "fa-star",
+    "heart": "fa-heart",
+    "settings": "fa-gear",
+    "search": "fa-magnifying-glass",
+    "mail": "fa-envelope",
+    "phone": "fa-phone",
+    "home": "fa-house",
+    "link": "fa-link",
+    "download": "fa-download",
+    "upload": "fa-upload",
+    "refresh": "fa-arrows-rotate",
+    "percent": "fa-percent",
+    "hashtag": "fa-hashtag",
+    "list": "fa-list",
+    "grid": "fa-grip",
+    "layers": "fa-layer-group",
+    "shield": "fa-shield-halved",
+    "lock": "fa-lock",
+    "eye": "fa-eye",
+    "thumbs-up": "fa-thumbs-up",
+    "thumbs-down": "fa-thumbs-down",
+}
+
+
+# ── Emoji → Font Awesome mapping ─────────────────────────────────────
+
+_EMOJI_MAP = {
+    # Finance
+    "💰": "fa-coins", "💵": "fa-money-bill", "💲": "fa-dollar-sign",
+    "💳": "fa-credit-card", "💸": "fa-money-bill-wave", "🪙": "fa-coins",
+    "₹": "fa-indian-rupee-sign",
+    # Shopping & Orders
+    "🛒": "fa-cart-shopping", "🛍️": "fa-bag-shopping", "🛍": "fa-bag-shopping",
+    "🧾": "fa-receipt",
+    # Documents
+    "📄": "fa-file-lines", "📋": "fa-clipboard-list", "📝": "fa-pen-to-square",
+    "📊": "fa-chart-column", "📈": "fa-chart-line", "📉": "fa-chart-line",
+    "📑": "fa-file-lines", "🗂️": "fa-folder-open", "🗂": "fa-folder-open",
+    # Alerts & Status
+    "⚠️": "fa-triangle-exclamation", "⚠": "fa-triangle-exclamation",
+    "❌": "fa-xmark", "✅": "fa-circle-check", "✓": "fa-check",
+    "🚫": "fa-ban", "⛔": "fa-ban", "❗": "fa-circle-exclamation",
+    "ℹ️": "fa-circle-info", "ℹ": "fa-circle-info",
+    "🔴": "fa-circle-exclamation", "🟢": "fa-circle-check",
+    "🟡": "fa-circle-exclamation", "🟠": "fa-triangle-exclamation",
+    # Inventory & Products
+    "📦": "fa-box", "🏪": "fa-store", "🏭": "fa-industry",
+    "🏢": "fa-building", "🏠": "fa-house",
+    # People
+    "👤": "fa-user", "👥": "fa-users", "👕": "fa-shirt",
+    "🧑‍💼": "fa-user-tie", "👨‍💼": "fa-user-tie",
+    # Time
+    "⏳": "fa-hourglass-half", "⏰": "fa-clock", "🕐": "fa-clock",
+    "📅": "fa-calendar-days",
+    # Communication
+    "📧": "fa-envelope", "📩": "fa-envelope-open", "📞": "fa-phone",
+    "💬": "fa-comment", "🔔": "fa-bell",
+    # Misc
+    "🔍": "fa-magnifying-glass", "🔎": "fa-magnifying-glass",
+    "⭐": "fa-star", "🌟": "fa-star", "🏆": "fa-trophy",
+    "🥇": "fa-medal", "🥈": "fa-medal", "🥉": "fa-medal",
+    "🎯": "fa-bullseye", "🚀": "fa-rocket", "💡": "fa-lightbulb",
+    "🔧": "fa-wrench", "⚙️": "fa-gear", "⚙": "fa-gear",
+    "🔒": "fa-lock", "🔓": "fa-lock-open", "🛡️": "fa-shield-halved",
+    "📌": "fa-thumbtack", "🔗": "fa-link",
+    "🧵": "fa-scissors", "🏷️": "fa-tag", "🏷": "fa-tag",
+    "🗓️": "fa-calendar", "🗓": "fa-calendar",
+    "📍": "fa-location-dot", "🌐": "fa-globe",
+    "🔄": "fa-arrows-rotate", "➡️": "fa-arrow-right",
+    "⬆️": "fa-arrow-up", "⬇️": "fa-arrow-down",
+    "📤": "fa-upload", "📥": "fa-download",
+    "🏪": "fa-store", "🛠️": "fa-screwdriver-wrench",
+    "🧪": "fa-flask", "📐": "fa-ruler-combined",
+    "🎨": "fa-palette", "🖨️": "fa-print",
+    "👁️": "fa-eye", "👁": "fa-eye",
+}
+
+# Pre-compile regex: match any emoji key (sorted longest first to avoid partial matches)
+_EMOJI_PATTERN = re.compile(
+    "|".join(re.escape(e) for e in sorted(_EMOJI_MAP.keys(), key=len, reverse=True))
+)
+
+
+def _emoji_to_fa(text):
+    """Replace all emojis in a string with Font Awesome <i> tags."""
+    if not text:
+        return text
+
+    def _replace(match):
+        emoji = match.group(0)
+        fa_name = _EMOJI_MAP.get(emoji, "fa-circle")
+        return f'<i class="fa-solid {fa_name}"></i>'
+
+    return _EMOJI_PATTERN.sub(_replace, text)
+
+
+def _resolve_icon(icon_name):
+    """Convert an icon name to a Font Awesome <i> tag.
+
+    Accepts: Lucide names ("trending-up"), FA names ("fa-box"),
+    or emoji (converted to FA icon).
+    """
+    if not icon_name:
+        return ""
+    name = icon_name.strip()
+    # If it's an emoji, convert via emoji map
+    if any(ord(c) > 127 for c in name):
+        fa_name = _EMOJI_MAP.get(name, None)
+        if fa_name:
+            return f'<div class="card-icon"><i class="fa-solid {fa_name}"></i></div>'
+        # Try matching the first emoji in the string
+        match = _EMOJI_PATTERN.search(name)
+        if match:
+            fa_name = _EMOJI_MAP[match.group(0)]
+            return f'<div class="card-icon"><i class="fa-solid {fa_name}"></i></div>'
+        # Unknown emoji — use a generic icon
+        return f'<div class="card-icon"><i class="fa-solid fa-circle"></i></div>'
+    # Already a full FA class like "fa-box" or "fa-solid fa-box"
+    if name.startswith("fa-") or name.startswith("fa "):
+        fa_class = name if " " in name else f"fa-solid {name}"
+        return f'<div class="card-icon"><i class="{fa_class}"></i></div>'
+    # Lookup in map
+    fa_name = _ICON_MAP.get(name.lower(), f"fa-{name}")
+    return f'<div class="card-icon"><i class="fa-solid {fa_name}"></i></div>'
+
+
 # ── Component Builders ───────────────────────────────────────────────
 
 def _build_cards_html(component):
@@ -429,12 +650,12 @@ def _build_cards_html(component):
             direction = "up" if card.get("change_direction", "up") == "up" else "down"
             change_html = f'<div class="card-change {direction}">{card["change"]}</div>'
 
-        icon_html = f'<div class="card-icon">{card["icon"]}</div>' if card.get("icon") else ""
+        icon_html = _resolve_icon(card.get("icon", ""))
+        label = card.get("label", "")
 
         html += f"""  <div class="rpt-card">
-    {icon_html}
+    <div class="card-header">{icon_html}<span class="card-label">{label}</span></div>
     <div class="card-value">{card["value"]}</div>
-    <div class="card-label">{card["label"]}</div>
     {change_html}
   </div>\n"""
     html += '</div>'
@@ -444,7 +665,7 @@ def _build_cards_html(component):
 def _build_chart_html(component):
     """Build chart section HTML. Returns (html, chart_config)."""
     chart_id = component["id"]
-    title = component.get("title", "")
+    title = _emoji_to_fa(component.get("title", ""))
     title_html = f'<div class="rpt-section-title">{title}</div>' if title else ""
 
     html = f"""<div class="rpt-section rpt-chart">
@@ -464,7 +685,7 @@ def _build_chart_html(component):
 def _build_table_html(component):
     """Build interactive table section HTML. Returns (html, table_config)."""
     table_id = component["id"]
-    title = component.get("title", "")
+    title = _emoji_to_fa(component.get("title", ""))
     columns = component.get("columns", [])
     rows = component.get("rows", [])
     filterable_cols = component.get("filterable_columns", [])
@@ -526,13 +747,25 @@ def _build_table_html(component):
 def _build_text_html(component):
     """Build markdown text section HTML."""
     content = component.get("content", "")
-    title = component.get("title", "")
+    title = _emoji_to_fa(component.get("title", ""))
     title_html = f'<div class="rpt-section-title">{title}</div>' if title else ""
 
-    escaped = json.dumps(content)
+    # Clean up content: decode unicode escapes and normalize newlines
+    if isinstance(content, str):
+        # Handle raw \n literals that should be actual newlines
+        content = content.replace("\\n", "\n")
+        # Handle common unicode escape artifacts
+        content = content.replace("\\u20b9", "₹").replace("\\u20B9", "₹")
+        content = content.replace("\\u2019", "'").replace("\\u2018", "'")
+        content = content.replace("\\u201c", "\u201c").replace("\\u201d", "\u201d")
+        # Replace emojis with Font Awesome icons
+        content = _emoji_to_fa(content)
+
+    # Encode as HTML-safe attribute using base64 to avoid all escaping issues
+    encoded = base64.b64encode(content.encode("utf-8")).decode("ascii")
     html = f"""<div class="rpt-section">
   {title_html}
-  <div class="rpt-text" data-markdown={escaped}></div>
+  <div class="rpt-text" data-markdown-b64="{encoded}"></div>
 </div>"""
     return html
 

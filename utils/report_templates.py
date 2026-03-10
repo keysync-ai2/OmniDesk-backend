@@ -46,10 +46,10 @@ def build_sales_report(cur, from_date, to_date, filters):
     components.append({
         "type": "summary_cards",
         "cards": [
-            {"label": "Total Orders", "value": str(order_count), "icon": "📦"},
-            {"label": "Total Revenue", "value": _fmt_amount(total_revenue), "icon": "💰"},
-            {"label": "Avg. Order Value", "value": _fmt_amount(avg_order), "icon": "📊"},
-            {"label": "Delivered", "value": str(delivered), "icon": "✅"},
+            {"label": "Total Orders", "value": str(order_count), "icon": "shopping-cart"},
+            {"label": "Total Revenue", "value": _fmt_amount(total_revenue), "icon": "indian-rupee"},
+            {"label": "Avg. Order Value", "value": _fmt_amount(avg_order), "icon": "chart"},
+            {"label": "Delivered", "value": str(delivered), "icon": "check-circle"},
         ],
     })
 
@@ -73,7 +73,7 @@ def build_sales_report(cur, from_date, to_date, filters):
                 "datasets": [{
                     "label": "Revenue (Rs.)",
                     "data": [float(d[2]) for d in daily],
-                    "borderColor": "#1a73e8",
+                    "borderColor": "#4a6274",
                     "backgroundColor": "rgba(26,115,232,0.08)",
                     "fill": True, "tension": 0.3, "pointRadius": 3,
                 }],
@@ -88,7 +88,7 @@ def build_sales_report(cur, from_date, to_date, filters):
                 "labels": [s.title() for s, _ in status_breakdown],
                 "datasets": [{
                     "data": [c for _, c in status_breakdown],
-                    "backgroundColor": ["#1a73e8", "#34a853", "#fbbc04", "#ea4335", "#9334e6"],
+                    "backgroundColor": ["#4a6274", "#5a8a5e", "#c9a84c", "#b5694d", "#7b6b8a"],
                 }],
             },
         })
@@ -185,10 +185,10 @@ def build_stock_report(cur, from_date, to_date, filters):
     components.append({
         "type": "summary_cards",
         "cards": [
-            {"label": "Stock Entries", "value": str(total_entries), "icon": "📋"},
-            {"label": "Total Units", "value": f"{total_qty:,}", "icon": "📦"},
-            {"label": "Low Stock Alerts", "value": str(low_stock_count), "icon": "⚠️"},
-            {"label": "Out of Stock", "value": str(out_of_stock), "icon": "🚫"},
+            {"label": "Stock Entries", "value": str(total_entries), "icon": "clipboard"},
+            {"label": "Total Units", "value": f"{total_qty:,}", "icon": "boxes"},
+            {"label": "Low Stock Alerts", "value": str(low_stock_count), "icon": "alert-triangle"},
+            {"label": "Out of Stock", "value": str(out_of_stock), "icon": "ban"},
         ],
     })
 
@@ -228,7 +228,7 @@ def build_stock_report(cur, from_date, to_date, filters):
             "data": {
                 "labels": ["Healthy", "Low", "Critical"],
                 "datasets": [{"data": [healthy, low, critical],
-                              "backgroundColor": ["#34a853", "#fbbc04", "#ea4335"]}],
+                              "backgroundColor": ["#5a8a5e", "#c9a84c", "#b5694d"]}],
             },
         },
     ]
@@ -241,7 +241,7 @@ def build_stock_report(cur, from_date, to_date, filters):
             "data": {
                 "labels": [r[0][:25] for r in top_stock],
                 "datasets": [{"label": "Quantity", "data": [r[3] for r in top_stock],
-                              "backgroundColor": "#1a73e8"}],
+                              "backgroundColor": "#4a6274"}],
             },
         })
 
@@ -284,10 +284,10 @@ def build_invoice_report(cur, from_date, to_date, filters):
     components.append({
         "type": "summary_cards",
         "cards": [
-            {"label": "Total Invoices", "value": str(total_invoices), "icon": "📄"},
-            {"label": "Total Amount", "value": _fmt_amount(total_amount), "icon": "💰"},
-            {"label": "Collected", "value": _fmt_amount(paid_amount), "icon": "✅"},
-            {"label": "Outstanding", "value": _fmt_amount(total_amount - paid_amount), "icon": "⏳"},
+            {"label": "Total Invoices", "value": str(total_invoices), "icon": "file-invoice"},
+            {"label": "Total Amount", "value": _fmt_amount(total_amount), "icon": "indian-rupee"},
+            {"label": "Collected", "value": _fmt_amount(paid_amount), "icon": "check-circle"},
+            {"label": "Outstanding", "value": _fmt_amount(total_amount - paid_amount), "icon": "clock"},
         ],
     })
 
@@ -299,7 +299,7 @@ def build_invoice_report(cur, from_date, to_date, filters):
                 "labels": [r[0].title() for r in status_rows],
                 "datasets": [{
                     "data": [float(r[2]) for r in status_rows],
-                    "backgroundColor": ["#34a853", "#ea4335", "#fbbc04", "#9334e6"],
+                    "backgroundColor": ["#5a8a5e", "#b5694d", "#c9a84c", "#7b6b8a"],
                 }],
             },
         })
