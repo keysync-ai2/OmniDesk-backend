@@ -2645,11 +2645,20 @@ def handle_form_submissions(args, user=None):
 
     submissions = []
     for item in items:
-        submissions.append({
+        sub = {
             "submission_id": item.get("submission_uuid"),
             "data": item.get("data", {}),
             "submitted_at": item.get("submitted_at"),
-        })
+        }
+        # Generate CloudFront signed URLs for file artifacts
+        artifacts = item.get("s3_artifacts") or []
+        if artifacts:
+            artifact_urls = []
+            for s3_key in artifacts:
+                url = generate_signed_url(s3_key, expires_in=300)
+                artifact_urls.append({"s3_key": s3_key, "url": url})
+            sub["artifacts"] = artifact_urls
+        submissions.append(sub)
 
     return {
         "form_id": str(form_id),

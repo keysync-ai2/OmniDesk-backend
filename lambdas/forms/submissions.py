@@ -66,13 +66,21 @@ def _list_submissions(event, context):
 
     submissions = []
     for item in items:
-        submissions.append({
+        sub = {
             "submission_id": item.get("submission_uuid"),
             "sort_key": item.get("submission_id"),
             "data": item.get("data", {}),
             "submitted_at": item.get("submitted_at"),
             "source_ip": item.get("source_ip"),
-        })
+        }
+        artifacts = item.get("s3_artifacts") or []
+        if artifacts:
+            artifact_urls = []
+            for s3_key in artifacts:
+                url = generate_signed_url(s3_key, expires_in=300)
+                artifact_urls.append({"s3_key": s3_key, "url": url})
+            sub["artifacts"] = artifact_urls
+        submissions.append(sub)
 
     result = {
         "form_id": str(form_id),

@@ -119,30 +119,72 @@ const form = document.getElementById('omnidesk-form');
 const submitBtn = document.getElementById('submit-btn');
 const errorMsg = document.getElementById('error-msg');
 
+function readFileAsBase64(file) {{
+  return new Promise(function(resolve, reject) {{
+    var reader = new FileReader();
+    reader.onload = function() {{
+      var base64 = reader.result.split(',')[1];
+      resolve({{ name: file.name, type: file.type, size: file.size, data: base64 }});
+    }};
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  }});
+}}
+
 form.addEventListener('submit', async function(e) {{
   e.preventDefault();
   submitBtn.disabled = true;
   submitBtn.textContent = 'Submitting...';
   errorMsg.style.display = 'none';
 
-  const formData = new FormData(form);
-  const data = {{}};
-  for (const [key, value] of formData.entries()) {{
-    if (data[key]) {{
-      if (Array.isArray(data[key])) data[key].push(value);
-      else data[key] = [data[key], value];
+  var formData = new FormData(form);
+  var data = {{}};
+  var files = {{}};
+
+  for (var [key, value] of formData.entries()) {{
+    if (value instanceof File && value.size > 0) {{
+      // Max 10 MB per file
+      if (value.size > 10 * 1024 * 1024) {{
+        errorMsg.textContent = value.name + ' exceeds 10 MB limit.';
+        errorMsg.style.display = 'block';
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit';
+        return;
+      }}
+      files[key] = value;
+    }} else if (value instanceof File) {{
+      // Empty file input — skip
     }} else {{
-      data[key] = value;
+      if (data[key]) {{
+        if (Array.isArray(data[key])) data[key].push(value);
+        else data[key] = [data[key], value];
+      }} else {{
+        data[key] = value;
+      }}
+    }}
+  }}
+
+  // Read all files as base64
+  var fileKeys = Object.keys(files);
+  for (var i = 0; i < fileKeys.length; i++) {{
+    try {{
+      data[fileKeys[i]] = await readFileAsBase64(files[fileKeys[i]]);
+    }} catch (err) {{
+      errorMsg.textContent = 'Failed to read file: ' + files[fileKeys[i]].name;
+      errorMsg.style.display = 'block';
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Submit';
+      return;
     }}
   }}
 
   try {{
-    const resp = await fetch('{submit_url}', {{
+    var resp = await fetch('{submit_url}', {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
       body: JSON.stringify(data),
     }});
-    const result = await resp.json();
+    var result = await resp.json();
     if (resp.ok) {{
       document.getElementById('form-container').style.display = 'none';
       document.getElementById('success-msg').style.display = 'block';
