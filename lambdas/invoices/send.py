@@ -1,15 +1,14 @@
 """Lambda: omnidesk-invoice-send
 POST /api/invoices/{id}/send
-Sends invoice to customer. SES is deferred to Phase 4 — for now returns a download link
+Sends invoice to customer. SES is deferred — for now returns a download link
 and marks the invoice as 'sent'. When SES is ready, this will email the link.
 """
-import os
 from datetime import datetime, timezone
-import boto3
 from utils.db import get_connection
 from utils.response import success, error
 from utils.auth_middleware import require_auth
 from utils.audit import log_action
+from utils.cloudfront_signer import generate_signed_url
 
 
 def _handler(event, context):
@@ -40,14 +39,8 @@ def _handler(event, context):
 
         customer_email = row[6]
 
-        # Generate download link
-        s3 = boto3.client("s3", region_name="us-east-1")
-        bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
-        download_url = s3.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket, "Key": s3_key},
-            ExpiresIn=86400,  # 24 hours for send link
-        )
+        # Generate download link (24h for email delivery window)
+        download_url = generate_signed_url(s3_key, expires_in=86400)
 
         # Mark as sent
         now = datetime.now(timezone.utc)

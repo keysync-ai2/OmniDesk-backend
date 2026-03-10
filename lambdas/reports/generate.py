@@ -1,7 +1,7 @@
 """Lambda: omnidesk-report-generate
 POST /api/reports/generate
 Generates component-based HTML reports with interactive tables + Chart.js charts.
-Uploads to S3, returns presigned URL.
+Uploads to S3, returns CloudFront signed URL.
 Preset types: sales, stock, invoice_summary. Also supports custom component lists.
 """
 import json
@@ -16,6 +16,7 @@ from utils.auth_middleware import require_auth
 from utils.audit import log_action
 from utils.report_builder import build_report_html
 from utils.report_templates import REPORT_BUILDERS
+from utils.cloudfront_signer import generate_signed_url
 
 S3_BUCKET = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
 s3 = boto3.client("s3", region_name="us-east-1")
@@ -65,7 +66,7 @@ def _handler(event, context):
     report_number = _generate_number()
     s3_key = f"reports/{report_number}.html"
     s3.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=html.encode("utf-8"), ContentType="text/html")
-    url = s3.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": s3_key}, ExpiresIn=900)
+    url = generate_signed_url(s3_key, expires_in=300)
 
     # Save to DB
     to_date_val = body.get("to_date") or datetime.utcnow().strftime("%Y-%m-%d")

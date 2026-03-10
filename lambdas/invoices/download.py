@@ -1,11 +1,10 @@
 """Lambda: omnidesk-invoice-download
-GET /api/invoices/{id}/download — returns a presigned S3 URL for the invoice (valid 15 min)
+GET /api/invoices/{id}/download — returns a CloudFront signed URL for the invoice (valid 5 min)
 """
-import os
-import boto3
 from utils.db import get_connection
 from utils.response import success, error
 from utils.auth_middleware import require_auth
+from utils.cloudfront_signer import generate_signed_url
 
 
 def _handler(event, context):
@@ -29,20 +28,13 @@ def _handler(event, context):
         if not s3_key:
             return error("Invoice file not found. Regenerate the invoice.", 400)
 
-        s3 = boto3.client("s3", region_name="us-east-1")
-        bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
-
-        url = s3.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": bucket, "Key": s3_key},
-            ExpiresIn=900,  # 15 minutes
-        )
+        url = generate_signed_url(s3_key, expires_in=300)
 
         return success({
             "invoice_id": str(row[0]),
             "invoice_number": row[1],
             "download_url": url,
-            "expires_in": "15 minutes",
+            "expires_in": "5 minutes",
         })
     finally:
         conn.close()

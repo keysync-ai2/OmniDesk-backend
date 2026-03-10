@@ -9,13 +9,12 @@ from boto3.dynamodb.conditions import Key
 from utils.db import get_connection
 from utils.response import success, error
 from utils.auth_middleware import require_auth
+from utils.cloudfront_signer import generate_signed_url
 
 DYNAMO_TABLE = os.environ.get("FORM_SUBMISSIONS_TABLE", "omnidesk-form-submissions")
-S3_BUCKET = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
 
 dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 table = dynamodb.Table(DYNAMO_TABLE)
-s3 = boto3.client("s3", region_name="us-east-1")
 
 
 def _get_form(form_id):
@@ -115,15 +114,11 @@ def _get_single_submission(event, context):
 
     item = items[0]
 
-    # Generate presigned URLs for any S3 artifacts
+    # Generate CloudFront signed URLs for any S3 artifacts
     artifacts = item.get("s3_artifacts") or []
     artifact_urls = []
     for s3_key in artifacts:
-        url = s3.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": S3_BUCKET, "Key": s3_key},
-            ExpiresIn=900,
-        )
+        url = generate_signed_url(s3_key, expires_in=300)
         artifact_urls.append({"s3_key": s3_key, "url": url})
 
     return success({

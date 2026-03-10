@@ -11,6 +11,7 @@ from utils.response import success, error
 from utils.auth_middleware import require_auth
 from utils.audit import log_action
 from utils.form_builder import build_form_html
+from utils.cloudfront_signer import generate_signed_url
 
 S3_BUCKET = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
 API_BASE = "https://zak2w9nuuh.execute-api.us-east-1.amazonaws.com/dev"
@@ -64,12 +65,8 @@ def _create(event, context):
             ContentType="text/html",
         )
 
-        # Get public presigned URL (long-lived: 7 days)
-        s3_url = s3.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": S3_BUCKET, "Key": s3_key},
-            ExpiresIn=604800,
-        )
+        # CloudFront signed URL (24h for public form sharing)
+        s3_url = generate_signed_url(s3_key, expires_in=86400)
 
         # Update form with S3 URL
         cur.execute("UPDATE forms SET s3_url = %s WHERE id = %s", (s3_key, form_id))
@@ -118,11 +115,7 @@ def _list(event, context):
         for r in rows:
             form_url = None
             if r[4]:
-                form_url = s3.generate_presigned_url(
-                    "get_object",
-                    Params={"Bucket": S3_BUCKET, "Key": r[4]},
-                    ExpiresIn=604800,
-                )
+                form_url = generate_signed_url(r[4], expires_in=86400)
             forms.append({
                 "id": str(r[0]),
                 "name": r[1],
@@ -154,11 +147,7 @@ def _get_single(form_id):
 
         form_url = None
         if r[5]:
-            form_url = s3.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": S3_BUCKET, "Key": r[5]},
-                ExpiresIn=604800,
-            )
+            form_url = generate_signed_url(r[5], expires_in=86400)
 
         schema = r[3] if isinstance(r[3], list) else json.loads(r[3] or '[]')
 

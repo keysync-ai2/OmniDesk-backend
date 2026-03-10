@@ -1,16 +1,13 @@
 """Lambda: omnidesk-report-list
 GET /api/reports        — List reports (paginated, filterable by type)
-GET /api/reports/{id}   — Get single report with fresh presigned URL
+GET /api/reports/{id}   — Get single report with fresh CloudFront signed URL
 """
 import json
 import os
-import boto3
 from utils.db import get_connection
 from utils.response import success, error
 from utils.auth_middleware import require_auth
-
-S3_BUCKET = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
-s3 = boto3.client("s3", region_name="us-east-1")
+from utils.cloudfront_signer import generate_signed_url
 
 
 def _handler(event, context):
@@ -38,12 +35,8 @@ def _get_single(report_id):
         if not r[7]:
             return error("Report has been deleted", 404)
 
-        # Fresh presigned URL
-        url = s3.generate_presigned_url(
-            "get_object",
-            Params={"Bucket": S3_BUCKET, "Key": r[3]},
-            ExpiresIn=900,
-        )
+        # Fresh CloudFront signed URL
+        url = generate_signed_url(r[3], expires_in=300)
 
         return success({
             "id": str(r[0]),

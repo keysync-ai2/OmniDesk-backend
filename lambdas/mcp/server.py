@@ -22,6 +22,7 @@ from utils.audit import log_action
 from utils.pdf_builder import build_invoice_pdf
 from utils.report_builder import build_report_html
 from utils.form_builder import build_form_html
+from utils.cloudfront_signer import generate_signed_url
 
 SERVER_INFO = {
     "name": "omnidesk-mcp",
@@ -2202,11 +2203,8 @@ def handle_invoice_download(args, user=None):
         if not row[2]:
             return {"error": "Invoice file not found. Regenerate the invoice."}
 
-        s3 = boto3.client("s3", region_name="us-east-1")
-        bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
-        url = s3.generate_presigned_url(
-            "get_object", Params={"Bucket": bucket, "Key": row[2]}, ExpiresIn=900)
-        return {"invoice_id": str(row[0]), "invoice_number": row[1], "download_url": url, "expires_in": "15 minutes"}
+        url = generate_signed_url(row[2], expires_in=300)
+        return {"invoice_id": str(row[0]), "invoice_number": row[1], "download_url": url, "expires_in": "5 minutes"}
     finally:
         conn.close()
 
@@ -2230,10 +2228,7 @@ def handle_invoice_send(args, user=None):
         if not row[2]:
             return {"error": "Invoice file not found. Generate the invoice first."}
 
-        s3 = boto3.client("s3", region_name="us-east-1")
-        bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
-        url = s3.generate_presigned_url(
-            "get_object", Params={"Bucket": bucket, "Key": row[2]}, ExpiresIn=86400)
+        url = generate_signed_url(row[2], expires_in=86400)
 
         now = datetime.now(timezone.utc)
         cur.execute(
@@ -2375,7 +2370,7 @@ def handle_report_generate(args, user=None):
     s3_key = f"reports/{report_number}.html"
 
     s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=html.encode("utf-8"), ContentType="text/html")
-    url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": s3_key}, ExpiresIn=900)
+    url = generate_signed_url(s3_key, expires_in=300)
 
     conn = get_connection()
     try:
@@ -2469,7 +2464,7 @@ def handle_report_get(args, user=None):
         if not r[7]:
             return {"error": "Report has been deleted"}
 
-        url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": r[3]}, ExpiresIn=900)
+        url = generate_signed_url(r[3], expires_in=300)
         return {
             "id": str(r[0]), "title": r[1], "report_type": r[2], "s3_key": r[3],
             "source_module": r[4],
@@ -2524,7 +2519,7 @@ def handle_form_create(args, user=None):
 
         s3_key = f"forms/{form_id}/form.html"
         s3_client.put_object(Bucket=S3_BUCKET, Key=s3_key, Body=html.encode("utf-8"), ContentType="text/html")
-        s3_url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": s3_key}, ExpiresIn=604800)
+        s3_url = generate_signed_url(s3_key, expires_in=86400)
 
         cur.execute("UPDATE forms SET s3_url = %s WHERE id = %s", (s3_key, form_id))
         conn.commit()
@@ -2572,7 +2567,7 @@ def handle_form_list(args, user=None):
         for r in rows:
             form_url = None
             if r[4]:
-                form_url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": r[4]}, ExpiresIn=604800)
+                form_url = generate_signed_url(r[4], expires_in=86400)
             forms.append({"id": str(r[0]), "name": r[1], "description": r[2], "theme": r[3], "form_url": form_url, "created_at": str(r[5])})
 
         return {"forms": forms, "total": total, "page": page, "limit": limit}
@@ -2605,7 +2600,7 @@ def handle_form_get(args, user=None):
 
         form_url = None
         if r[5]:
-            form_url = s3_client.generate_presigned_url("get_object", Params={"Bucket": S3_BUCKET, "Key": r[5]}, ExpiresIn=604800)
+            form_url = generate_signed_url(r[5], expires_in=86400)
 
         schema = r[3] if isinstance(r[3], list) else json.loads(r[3] or "[]")
         return {
