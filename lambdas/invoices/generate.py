@@ -19,11 +19,11 @@ from utils.audit import log_action
 from utils.pdf_builder import build_invoice_pdf
 
 
-def _generate_invoice_number():
-    """Generate invoice number like INV-20260309-B4K2."""
+def _generate_invoice_number(prefix="INV"):
+    """Generate invoice number like INV-20260309-B4K2 (prefix is customizable)."""
     date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
     rand_part = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
-    return f"INV-{date_part}-{rand_part}"
+    return f"{prefix}-{date_part}-{rand_part}"
 
 
 def _get_org_settings(cur):
@@ -106,13 +106,30 @@ def _handler(event, context):
         tax_amount = round(subtotal * tax_rate / 100, 2)
         total_amount = round(subtotal + tax_amount, 2)
 
+        # Load invoice template for custom prefix and PDF rendering
+        cur.execute(
+            "SELECT config, logo_s3_key FROM invoice_templates WHERE is_default = TRUE LIMIT 1"
+        )
+        tmpl_row = cur.fetchone()
+        template_config = None
+        if tmpl_row:
+            template_config = tmpl_row[0] if isinstance(tmpl_row[0], dict) else json.loads(tmpl_row[0])
+            if tmpl_row[1]:
+                template_config["logo_s3_key"] = tmpl_row[1]
+
+        invoice_prefix = "INV"
+        if template_config:
+            ct = template_config.get("custom_text", {})
+            if ct.get("invoice_prefix"):
+                invoice_prefix = ct["invoice_prefix"]
+
         # Generate invoice number
-        invoice_number = _generate_invoice_number()
+        invoice_number = _generate_invoice_number(invoice_prefix)
         for _ in range(5):
             cur.execute("SELECT id FROM invoices WHERE invoice_number = %s", (invoice_number,))
             if not cur.fetchone():
                 break
-            invoice_number = _generate_invoice_number()
+            invoice_number = _generate_invoice_number(invoice_prefix)
 
         # Default due date: 30 days from now
         if not due_date:
@@ -132,8 +149,8 @@ def _handler(event, context):
             "notes": notes,
         }
 
-        # Build PDF invoice
-        pdf_bytes = build_invoice_pdf(invoice_data, items, order_data, settings)
+        # Build PDF invoice (with template if available)
+        pdf_bytes = build_invoice_pdf(invoice_data, items, order_data, settings, template=template_config)
 
         # Upload to S3
         s3_key = f"invoices/{invoice_number}.pdf"

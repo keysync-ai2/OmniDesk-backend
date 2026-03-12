@@ -11,68 +11,71 @@ export AWS_CONFIG_FILE=/Users/dhruvsharma/Documents/Research/OmniDesk/.aws/confi
 
 ## AWS Resource IDs
 
-| Resource | ID / ARN |
-|----------|----------|
-| AWS Account | `577397739686` |
-| Region | `us-east-1` |
-| Lambda Role | `arn:aws:iam::577397739686:role/omnidesk-lambda-role` |
-| Lambda Layer | `arn:aws:lambda:us-east-1:577397739686:layer:omnidesk-shared-layer:10` |
-| API Gateway ID | `zak2w9nuuh` |
-| API Gateway URL | `https://zak2w9nuuh.execute-api.us-east-1.amazonaws.com/dev` |
-| S3 Bucket | `omnidesk-files-577397739686` |
+| Resource        | ID / ARN                                                               |
+| --------------- | ---------------------------------------------------------------------- |
+| AWS Account     | `577397739686`                                                         |
+| Region          | `us-east-1`                                                            |
+| Lambda Role     | `arn:aws:iam::577397739686:role/omnidesk-lambda-role`                  |
+| Lambda Layer    | `arn:aws:lambda:us-east-1:577397739686:layer:omnidesk-shared-layer:10` |
+| API Gateway ID  | `zak2w9nuuh`                                                           |
+| API Gateway URL | `https://zak2w9nuuh.execute-api.us-east-1.amazonaws.com/dev`           |
+| S3 Bucket       | `omnidesk-files-577397739686`                                          |
 
 ### API Gateway Resource IDs
 
-| Path | Resource ID | Method | Lambda |
-|------|------------|--------|--------|
-| `/api/auth/register` | `gw65xt` | POST | `omnidesk-auth-register` |
-| `/api/auth/login` | `d2atka` | POST | `omnidesk-auth-login` |
-| `/api/auth/me` | `t2ychm` | GET | `omnidesk-auth-me` |
-| `/mcp` | `fsr82g` | POST | `omnidesk-mcp-server` |
-| `/api/categories` | `1e27t0` | GET, POST | `omnidesk-categories` |
-| `/api/categories/{id}` | `jrt9r5` | GET | `omnidesk-categories` |
-| `/api/products` | `dmil9x` | GET, POST | `omnidesk-product-list`, `omnidesk-product-create` |
-| `/api/products/{id}` | `t8xk6z` | GET, PUT | `omnidesk-product-list`, `omnidesk-product-update` |
-| `/api/products/{id}/deactivate` | `9fj13j` | PATCH | `omnidesk-product-update` |
-| `/api/products/search` | `ai071f` | GET | `omnidesk-product-search` |
-| `/api/warehouses` | `yuordm` | GET, POST | `omnidesk-warehouses` |
-| `/api/warehouses/{id}` | `j0gcmr` | GET | `omnidesk-warehouses` |
-| `/api/stock/{product_id}` | `dwzody` | GET | `omnidesk-stock-check` |
-| `/api/stock/adjust` | `qtek0v` | POST | `omnidesk-stock-adjust` |
-| `/api/stock/low` | `h7113j` | GET | `omnidesk-stock-low` |
-| `/api/stock/movements/{product_id}` | `7a580d` | GET | `omnidesk-stock-movements` |
-| `/api/orders` | `2kb04v` | GET, POST | `omnidesk-order-list`, `omnidesk-order-create` |
-| `/api/orders/{id}` | `77og89` | GET | `omnidesk-order-list` |
-| `/api/orders/{id}/status` | `myuovk` | PATCH | `omnidesk-order-status` |
-| `/api/orders/{id}/cancel` | `e7f2t5` | PATCH | `omnidesk-order-status` |
-| `/api/orders/{id}/history` | `mkijtc` | GET | `omnidesk-order-history` |
-| `/api/invoices` | `3z1dmg` | GET | `omnidesk-invoice-list` |
-| `/api/invoices/generate` | `bvwzh1` | POST | `omnidesk-invoice-generate` |
-| `/api/invoices/{id}` | `zr0sbx` | GET | `omnidesk-invoice-list` |
-| `/api/invoices/{id}/download` | `082e7p` | GET | `omnidesk-invoice-download` |
-| `/api/invoices/{id}/send` | `305q12` | POST | `omnidesk-invoice-send` |
-| `/api/reports` | `tao65w` | GET | `omnidesk-report-list` |
-| `/api/reports/generate` | `i4lnpq` | POST | `omnidesk-report-generate` |
-| `/api/reports/{id}` | `3eezvh` | GET | `omnidesk-report-list` |
-| `/api/forms` | `agy1m7` | GET, POST | `omnidesk-form-create` |
-| `/api/forms/{id}` | `aygobk` | GET | `omnidesk-form-create` |
-| `/api/forms/{id}/submit` | `4kubgm` | POST | `omnidesk-form-submit` |
-| `/api/forms/{id}/submissions` | `cqrfvm` | GET | `omnidesk-form-submissions` |
-| `/api/forms/{id}/submissions/{sub_id}` | `x58i8q` | GET | `omnidesk-form-submissions` |
-| `/api` | `bdbaw3` | — | — |
-| `/api/auth` | `xcx7sm` | — | — |
-| `/api/stock` | `pbghbw` | — | — |
-| `/api/stock/movements` | `in9yz8` | — | — |
-| Root `/` | `683b9dp63l` | — | — |
+| Path                                   | Resource ID  | Method    | Lambda                                             |
+| -------------------------------------- | ------------ | --------- | -------------------------------------------------- |
+| `/api/auth/register`                   | `gw65xt`     | POST      | `omnidesk-auth-register`                           |
+| `/api/auth/login`                      | `d2atka`     | POST      | `omnidesk-auth-login`                              |
+| `/api/auth/me`                         | `t2ychm`     | GET       | `omnidesk-auth-me`                                 |
+| `/mcp`                                 | `fsr82g`     | POST      | `omnidesk-mcp-server`                              |
+| `/api/categories`                      | `1e27t0`     | GET, POST | `omnidesk-categories`                              |
+| `/api/categories/{id}`                 | `jrt9r5`     | GET       | `omnidesk-categories`                              |
+| `/api/products`                        | `dmil9x`     | GET, POST | `omnidesk-product-list`, `omnidesk-product-create` |
+| `/api/products/{id}`                   | `t8xk6z`     | GET, PUT  | `omnidesk-product-list`, `omnidesk-product-update` |
+| `/api/products/{id}/deactivate`        | `9fj13j`     | PATCH     | `omnidesk-product-update`                          |
+| `/api/products/search`                 | `ai071f`     | GET       | `omnidesk-product-search`                          |
+| `/api/warehouses`                      | `yuordm`     | GET, POST | `omnidesk-warehouses`                              |
+| `/api/warehouses/{id}`                 | `j0gcmr`     | GET       | `omnidesk-warehouses`                              |
+| `/api/stock/{product_id}`              | `dwzody`     | GET       | `omnidesk-stock-check`                             |
+| `/api/stock/adjust`                    | `qtek0v`     | POST      | `omnidesk-stock-adjust`                            |
+| `/api/stock/low`                       | `h7113j`     | GET       | `omnidesk-stock-low`                               |
+| `/api/stock/movements/{product_id}`    | `7a580d`     | GET       | `omnidesk-stock-movements`                         |
+| `/api/orders`                          | `2kb04v`     | GET, POST | `omnidesk-order-list`, `omnidesk-order-create`     |
+| `/api/orders/{id}`                     | `77og89`     | GET       | `omnidesk-order-list`                              |
+| `/api/orders/{id}/status`              | `myuovk`     | PATCH     | `omnidesk-order-status`                            |
+| `/api/orders/{id}/cancel`              | `e7f2t5`     | PATCH     | `omnidesk-order-status`                            |
+| `/api/orders/{id}/history`             | `mkijtc`     | GET       | `omnidesk-order-history`                           |
+| `/api/invoices`                        | `3z1dmg`     | GET       | `omnidesk-invoice-list`                            |
+| `/api/invoices/generate`               | `bvwzh1`     | POST      | `omnidesk-invoice-generate`                        |
+| `/api/invoices/{id}`                   | `zr0sbx`     | GET       | `omnidesk-invoice-list`                            |
+| `/api/invoices/{id}/download`          | `082e7p`     | GET       | `omnidesk-invoice-download`                        |
+| `/api/invoices/{id}/send`              | `305q12`     | POST      | `omnidesk-invoice-send`                            |
+| `/api/reports`                         | `tao65w`     | GET       | `omnidesk-report-list`                             |
+| `/api/reports/generate`                | `i4lnpq`     | POST      | `omnidesk-report-generate`                         |
+| `/api/reports/{id}`                    | `3eezvh`     | GET       | `omnidesk-report-list`                             |
+| `/api/forms`                           | `agy1m7`     | GET, POST | `omnidesk-form-create`                             |
+| `/api/forms/{id}`                      | `aygobk`     | GET       | `omnidesk-form-create`                             |
+| `/api/forms/{id}/submit`               | `4kubgm`     | POST      | `omnidesk-form-submit`                             |
+| `/api/forms/{id}/submissions`          | `cqrfvm`     | GET       | `omnidesk-form-submissions`                        |
+| `/api/forms/{id}/submissions/{sub_id}` | `x58i8q`     | GET       | `omnidesk-form-submissions`                        |
+| `/api/invoice-templates`               | `lkg6ny`     | GET, POST | `omnidesk-invoice-template`                        |
+| `/api/invoice-templates/editor`        | `f213bc`     | GET       | `omnidesk-invoice-template-editor`                 |
+| `/api/invoice-templates/logo`          | `672lmj`     | POST      | `omnidesk-invoice-template-logo`                   |
+| `/api`                                 | `bdbaw3`     | —         | —                                                  |
+| `/api/auth`                            | `xcx7sm`     | —         | —                                                  |
+| `/api/stock`                           | `pbghbw`     | —         | —                                                  |
+| `/api/stock/movements`                 | `in9yz8`     | —         | —                                                  |
+| Root `/`                               | `683b9dp63l` | —         | —                                                  |
 
 ### IAM Role Policies
 
-| Policy | Purpose |
-|--------|---------|
-| `AWSLambdaBasicExecutionRole` | CloudWatch Logs |
-| `AmazonDynamoDBFullAccess` | DynamoDB tables |
-| `AmazonS3FullAccess` | S3 bucket |
-| `SecretsManagerReadWrite` | DB credentials, JWT secret |
+| Policy                        | Purpose                    |
+| ----------------------------- | -------------------------- |
+| `AWSLambdaBasicExecutionRole` | CloudWatch Logs            |
+| `AmazonDynamoDBFullAccess`    | DynamoDB tables            |
+| `AmazonS3FullAccess`          | S3 bucket                  |
+| `SecretsManagerReadWrite`     | DB credentials, JWT secret |
 
 ### Lambda Environment Variables
 
@@ -329,12 +332,15 @@ aws lambda delete-function --function-name omnidesk-run-migration --region us-ea
 
 ### Migration History
 
-| Migration | File | Description |
-|-----------|------|-------------|
-| 001 | `001_initial_schema.sql` | Full schema — 22 tables, indexes, constraints |
-| 002 | `002_add_warehouse_to_movements.sql` | Added `warehouse_id` to `stock_movements` |
-| 003 | `003_org_settings.sql` | `org_settings` table + 11 default rows |
-| 004 | `004_product_extra_fields.sql` | Added `extra_fields JSONB DEFAULT '{}'` to `products` |
+| Migration | File                                 | Description                                           |
+| --------- | ------------------------------------ | ----------------------------------------------------- |
+| 001       | `001_initial_schema.sql`             | Full schema — 22 tables, indexes, constraints         |
+| 002       | `002_add_warehouse_to_movements.sql` | Added `warehouse_id` to `stock_movements`             |
+| 003       | `003_org_settings.sql`               | `org_settings` table + 11 default rows                |
+| 004       | `004_product_extra_fields.sql`       | Added `extra_fields JSONB DEFAULT '{}'` to `products` |
+| 005       | `005_reports_forms_update.sql`       | Reports + forms schema updates                        |
+| 006       | `006_form_submission_count.sql`      | Form submission count tracking                        |
+| 007       | `007_invoice_templates.sql`          | `invoice_templates` table (JSONB config, 5 themes, 28 fields, logo) |
 
 ---
 
@@ -397,6 +403,14 @@ curl -s -X POST "$BASE/mcp" -H "Content-Type: application/json" \
 
 ### Generate a new 48h token
 
+**Option A — Python script (recommended)**:
+```bash
+cd /Users/dhruvsharma/Documents/Research/OmniDesk/backend
+python scripts/generate_token.py
+# Outputs: token, MCP URL, and ready-to-paste Claude Desktop config
+```
+
+**Option B — curl**:
 ```bash
 curl -s -X POST https://zak2w9nuuh.execute-api.us-east-1.amazonaws.com/dev/api/auth/login \
   -H "Content-Type: application/json" \
@@ -413,29 +427,35 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
   "command": "npx",
   "args": [
     "mcp-remote",
-    "https://zak2w9nuuh.execute-api.us-east-1.amazonaws.com/dev/mcp",
-    "--header",
-    "Authorization: Bearer <paste-token-here>"
+    "https://zak2w9nuuh.execute-api.us-east-1.amazonaws.com/dev/mcp?token=<paste-token-here>"
   ]
 }
 ```
 
 Restart Claude Desktop after updating.
 
+### How MCP auth works
+
+1. `mcp-remote` connects to the URL with `?token=JWT` on initial handshake (initialize)
+2. MCP server caches `mcp-session-id → token` in DynamoDB (`omnidesk-mcp-sessions`, TTL 48h)
+3. Subsequent `tools/call` requests carry `Mcp-Session-Id` header → server looks up cached token
+4. Authorization header also works for direct API/curl usage
+
 ### Token details
 
-| Setting | Value |
-|---------|-------|
-| Access token expiry | 48 hours |
-| Refresh token expiry | 30 days |
-| Algorithm | HS256 |
-| Secret | AWS Secrets Manager `omnidesk/jwt-secret` |
-| Claims | `user_id`, `email`, `role`, `type`, `iat`, `exp` |
+| Setting              | Value                                            |
+| -------------------- | ------------------------------------------------ |
+| Access token expiry  | 48 hours                                         |
+| Refresh token expiry | 30 days                                          |
+| Algorithm            | HS256                                            |
+| Secret               | AWS Secrets Manager `omnidesk/jwt-secret`        |
+| Claims               | `user_id`, `email`, `role`, `type`, `iat`, `exp` |
+| Session cache        | DynamoDB `omnidesk-mcp-sessions` (TTL 48h)       |
 
 ### When token expires
 
 MCP tools return: `"error": "Authentication required. Your token is missing or expired."`
-Regenerate using the curl command above and restart Claude Desktop.
+Regenerate using `python scripts/generate_token.py` and restart Claude Desktop.
 
 ---
 
@@ -447,4 +467,5 @@ Regenerate using the curl command above and restart Claude Desktop.
 4. **Lambda handler path**: Handler is always `lambda_function.lambda_handler` — the source file must be renamed to `lambda_function.py` in the zip.
 5. **utils/ packaging**: Every Lambda zip must include the `utils/` directory.
 6. **mcp-remote needs GET+DELETE**: API Gateway `/mcp` must have GET, POST, DELETE, and OPTIONS methods. `mcp-remote` does a Streamable HTTP handshake via GET before sending POST. Missing GET causes 403 "Missing Authentication Token".
-7. **No login tool in MCP**: Token is passed via `--header` in Claude Desktop config, not via a chat-based login flow. User never types credentials in chat.
+7. **No login tool in MCP**: Token is passed via `?token=` in Claude Desktop config URL, not via a chat-based login flow. User never types credentials in chat.
+8. **mcp-remote does NOT forward query params**: `?token=` in the URL is only used for the initial connection. Subsequent `tools/call` POSTs have no query params or Authorization header. Solution: DynamoDB session caching (see "How MCP auth works" above).

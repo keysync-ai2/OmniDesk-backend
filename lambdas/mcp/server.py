@@ -390,6 +390,29 @@ TOOLS = [
             "required": ["invoice_id"],
         },
     },
+    # ── Invoice Templates ────────────────────────────────────────
+    {
+        "name": "invoice_template_get",
+        "description": "Get the current invoice template configuration. Shows which fields are visible/hidden, the active color theme, custom text (brand name, tagline, prefix, footer), and logo status. Use this to check template settings before generating an invoice.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "invoice_template_update",
+        "description": "Update the invoice template. Toggle field visibility (28 fields), change color theme (professional_blue, forest_green, charcoal, warm_terracotta, royal_purple), set custom text (brand_name, tagline, invoice_prefix, footer_text). Requires admin role. Example: 'Hide the SKU column and switch to forest_green theme'.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "fields": {"type": "object", "description": "Field visibility toggles, e.g. {\"item_sku\": false, \"customer_address\": true}"},
+                "theme": {"type": "string", "enum": ["professional_blue", "forest_green", "charcoal", "warm_terracotta", "royal_purple"], "description": "Color theme"},
+                "custom_text": {"type": "object", "description": "Custom text: {brand_name, tagline, invoice_prefix, footer_text}"},
+            },
+        },
+    },
+    {
+        "name": "invoice_template_editor",
+        "description": "Open the visual invoice template editor. Generates an interactive HTML page with a live preview where you can toggle every field on/off, upload a logo, set brand name/prefix, and pick a color theme. Returns a URL to open in the browser. Requires admin role.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
     # ── Org Settings ──────────────────────────────────────────
     {
         "name": "org_settings_get",
@@ -566,6 +589,9 @@ TOOL_ROLES = {
     "invoice_get": "viewer",
     "invoice_download": "viewer",
     "invoice_send": "manager",
+    "invoice_template_get": "viewer",
+    "invoice_template_update": "admin",
+    "invoice_template_editor": "admin",
     "org_settings_get": "viewer",
     "org_settings_update": "admin",
     "report_generate": "manager",
@@ -802,6 +828,12 @@ def handle_omnidesk_help(args, user=None):
                     "example": "Download this invoice"},
                 {"command": "invoice_send",
                     "description": "Send invoice to customer (manager+)", "example": "Send this invoice to the customer"},
+                {"command": "invoice_template_get",
+                    "description": "View current invoice template settings", "example": "Show invoice template config"},
+                {"command": "invoice_template_update",
+                    "description": "Update invoice template (admin)", "example": "Hide SKU column and switch to green theme"},
+                {"command": "invoice_template_editor",
+                    "description": "Open visual template editor (admin)", "example": "Open the invoice template editor"},
             ],
         },
         "reports": {
@@ -2044,13 +2076,23 @@ def handle_invoice_generate(args, user=None):
         tax_amount = round(subtotal * tax_rate / 100, 2)
         total_amount = round(subtotal + tax_amount, 2)
 
-        invoice_number = _generate_number("INV")
+        # Load invoice template for custom prefix and PDF rendering
+        template_config, template_logo_key = _load_default_template(cur)
+        invoice_prefix = "INV"
+        if template_config:
+            ct = template_config.get("custom_text", {})
+            if ct.get("invoice_prefix"):
+                invoice_prefix = ct["invoice_prefix"]
+            if template_logo_key:
+                template_config["logo_s3_key"] = template_logo_key
+
+        invoice_number = _generate_number(invoice_prefix)
         for _ in range(5):
             cur.execute(
                 "SELECT id FROM invoices WHERE invoice_number = %s", (invoice_number,))
             if not cur.fetchone():
                 break
-            invoice_number = _generate_number("INV")
+            invoice_number = _generate_number(invoice_prefix)
 
         if not due_date:
             due_date = (datetime.now(timezone.utc) +
@@ -2061,8 +2103,8 @@ def handle_invoice_generate(args, user=None):
                         "tax_amount": tax_amount, "total_amount": total_amount, "due_date": due_date,
                         "created_at": created_at, "notes": notes}
 
-        # Build PDF invoice
-        pdf_bytes = build_invoice_pdf(invoice_data, items, order_data, settings)
+        # Build PDF invoice with template
+        pdf_bytes = build_invoice_pdf(invoice_data, items, order_data, settings, template=template_config)
 
         s3_key = f"invoices/{invoice_number}.pdf"
         s3_bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
@@ -2251,6 +2293,203 @@ def handle_invoice_send(args, user=None):
         return result
     except Exception as e:
         conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+# ── Invoice Template Handlers ─────────────────────────────────────────
+
+
+def _load_default_template(cur):
+    """Load default invoice template config from DB. Returns (config, logo_s3_key) or defaults."""
+    cur.execute(
+        "SELECT config, logo_s3_key FROM invoice_templates WHERE is_default = TRUE LIMIT 1"
+    )
+    row = cur.fetchone()
+    if row:
+        config = row[0] if isinstance(row[0], dict) else json.loads(row[0])
+        return config, row[1]
+    return None, None
+
+
+def handle_invoice_template_get(args, user=None):
+    """Get the current default invoice template configuration."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT id, name, config, logo_s3_key, updated_at
+               FROM invoice_templates WHERE is_default = TRUE LIMIT 1"""
+        )
+        row = cur.fetchone()
+        if not row:
+            return {
+                "id": None, "name": "Default",
+                "config": {"fields": {
+                    "company_logo": True, "company_name": True, "brand_name": False,
+                    "company_address": True, "company_phone": True, "company_email": True,
+                    "tagline": False, "invoice_number": True, "invoice_date": True,
+                    "due_date": True, "order_reference": True, "customer_name": True,
+                    "customer_email": True, "customer_phone": True, "customer_address": False,
+                    "item_number": True, "item_sku": True, "item_description": True,
+                    "item_quantity": True, "item_unit_price": True, "item_line_total": True,
+                    "subtotal": True, "tax_line": True, "grand_total": True,
+                    "payment_terms": True, "notes": True, "footer_text": True,
+                    "powered_by_omnidesk": True},
+                    "custom_text": {"brand_name": "", "tagline": "", "invoice_prefix": "INV", "footer_text": ""},
+                    "theme": "professional_blue"},
+                "logo_s3_key": None,
+                "message": "No custom template saved yet. Using defaults (all fields visible, professional_blue theme).",
+            }
+        config = row[2] if isinstance(row[2], dict) else json.loads(row[2])
+        return {
+            "id": str(row[0]), "name": row[1], "config": config,
+            "logo_s3_key": row[3], "updated_at": str(row[4]),
+        }
+    finally:
+        conn.close()
+
+
+def handle_invoice_template_update(args, user=None):
+    """Update invoice template fields, theme, or custom text."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        # Load existing config
+        cur.execute("SELECT id, config FROM invoice_templates WHERE is_default = TRUE LIMIT 1")
+        existing = cur.fetchone()
+
+        if existing:
+            template_id = existing[0]
+            config = existing[1] if isinstance(existing[1], dict) else json.loads(existing[1])
+        else:
+            template_id = None
+            config = {
+                "fields": {
+                    "company_logo": True, "company_name": True, "brand_name": False,
+                    "company_address": True, "company_phone": True, "company_email": True,
+                    "tagline": False, "invoice_number": True, "invoice_date": True,
+                    "due_date": True, "order_reference": True, "customer_name": True,
+                    "customer_email": True, "customer_phone": True, "customer_address": False,
+                    "item_number": True, "item_sku": True, "item_description": True,
+                    "item_quantity": True, "item_unit_price": True, "item_line_total": True,
+                    "subtotal": True, "tax_line": True, "grand_total": True,
+                    "payment_terms": True, "notes": True, "footer_text": True,
+                    "powered_by_omnidesk": True,
+                },
+                "custom_text": {"brand_name": "", "tagline": "", "invoice_prefix": "INV", "footer_text": ""},
+                "theme": "professional_blue",
+            }
+
+        # Apply field updates (merge, not replace)
+        if args.get("fields") and isinstance(args["fields"], dict):
+            if "fields" not in config:
+                config["fields"] = {}
+            config["fields"].update(args["fields"])
+
+        # Apply theme
+        valid_themes = {"professional_blue", "forest_green", "charcoal", "warm_terracotta", "royal_purple"}
+        if args.get("theme"):
+            if args["theme"] not in valid_themes:
+                return {"error": f"Invalid theme. Choose from: {', '.join(sorted(valid_themes))}"}
+            config["theme"] = args["theme"]
+
+        # Apply custom text (merge)
+        if args.get("custom_text") and isinstance(args["custom_text"], dict):
+            if "custom_text" not in config:
+                config["custom_text"] = {}
+            config["custom_text"].update(args["custom_text"])
+
+        # Save
+        if template_id:
+            cur.execute(
+                "UPDATE invoice_templates SET config = %s, updated_at = NOW() WHERE id = %s RETURNING id",
+                (json.dumps(config), template_id))
+        else:
+            cur.execute(
+                """INSERT INTO invoice_templates (name, is_default, config, created_by)
+                   VALUES ('Default', TRUE, %s, %s) RETURNING id""",
+                (json.dumps(config), user["user_id"]))
+
+        row = cur.fetchone()
+        conn.commit()
+
+        log_action(user["user_id"], "update_invoice_template", "invoice_templates",
+                   entity_id=str(row[0]), details={"theme": config.get("theme")})
+
+        return {
+            "id": str(row[0]), "config": config,
+            "message": "Invoice template updated successfully.",
+        }
+    except Exception as e:
+        conn.rollback()
+        return {"error": str(e)}
+    finally:
+        conn.close()
+
+
+def handle_invoice_template_editor(args, user=None):
+    """Generate visual editor page → S3 → return signed URL."""
+    from utils.invoice_template_builder import build_invoice_template_editor
+
+    api_base = os.environ.get("API_BASE_URL", "https://api.omnidesk.ai")
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, config, logo_s3_key FROM invoice_templates WHERE is_default = TRUE LIMIT 1")
+        row = cur.fetchone()
+
+        if row:
+            template_id = str(row[0])
+            config = row[1] if isinstance(row[1], dict) else json.loads(row[1])
+            logo_s3_key = row[2]
+        else:
+            template_id = "new"
+            config = {
+                "fields": {
+                    "company_logo": True, "company_name": True, "brand_name": False,
+                    "company_address": True, "company_phone": True, "company_email": True,
+                    "tagline": False, "invoice_number": True, "invoice_date": True,
+                    "due_date": True, "order_reference": True, "customer_name": True,
+                    "customer_email": True, "customer_phone": True, "customer_address": False,
+                    "item_number": True, "item_sku": True, "item_description": True,
+                    "item_quantity": True, "item_unit_price": True, "item_line_total": True,
+                    "subtotal": True, "tax_line": True, "grand_total": True,
+                    "payment_terms": True, "notes": True, "footer_text": True,
+                    "powered_by_omnidesk": True},
+                "custom_text": {"brand_name": "", "tagline": "", "invoice_prefix": "INV", "footer_text": ""},
+                "theme": "professional_blue",
+            }
+            logo_s3_key = None
+
+        logo_url = None
+        if logo_s3_key:
+            try:
+                logo_url = generate_signed_url(logo_s3_key, expires_in=3600)
+            except Exception:
+                pass
+
+        save_endpoint = f"{api_base}/api/invoice-templates"
+        logo_endpoint = f"{api_base}/api/invoice-templates/logo"
+        html = build_invoice_template_editor(config, logo_url, save_endpoint, logo_endpoint)
+
+        s3_key = f"invoice-templates/editor-{template_id}.html"
+        s3_bucket = os.environ.get("S3_BUCKET", "omnidesk-files-577397739686")
+        s3 = boto3.client("s3", region_name="us-east-1")
+        s3.put_object(Bucket=s3_bucket, Key=s3_key, Body=html.encode("utf-8"),
+                      ContentType="text/html")
+
+        editor_url = generate_signed_url(s3_key, expires_in=3600)
+        return {
+            "editor_url": editor_url,
+            "template_id": template_id,
+            "expires_in": "1 hour",
+            "message": "Open this URL in your browser to customize your invoice template with a live preview.",
+        }
+    except Exception as e:
         return {"error": str(e)}
     finally:
         conn.close()
@@ -2697,6 +2936,9 @@ TOOL_HANDLERS = {
     "invoice_get": handle_invoice_get,
     "invoice_download": handle_invoice_download,
     "invoice_send": handle_invoice_send,
+    "invoice_template_get": handle_invoice_template_get,
+    "invoice_template_update": handle_invoice_template_update,
+    "invoice_template_editor": handle_invoice_template_editor,
     "org_settings_get": handle_org_settings_get,
     "org_settings_update": handle_org_settings_update,
     "report_generate": handle_report_generate,
@@ -2782,6 +3024,39 @@ def extract_user_from_headers(event):
 # ── Lambda Handler ──────────────────────────────────────────────────────
 
 
+def _get_session_token(session_id):
+    """Retrieve cached token for an MCP session from DynamoDB."""
+    if not session_id:
+        return None
+    try:
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = ddb.Table("omnidesk-mcp-sessions")
+        resp = table.get_item(Key={"session_id": session_id})
+        item = resp.get("Item")
+        if item:
+            return item.get("token")
+    except Exception:
+        pass
+    return None
+
+
+def _cache_session_token(session_id, token):
+    """Cache token for an MCP session in DynamoDB (TTL = 48h)."""
+    if not session_id or not token:
+        return
+    try:
+        import time
+        ddb = boto3.resource("dynamodb", region_name="us-east-1")
+        table = ddb.Table("omnidesk-mcp-sessions")
+        table.put_item(Item={
+            "session_id": session_id,
+            "token": token,
+            "ttl": int(time.time()) + 172800,  # 48 hours
+        })
+    except Exception:
+        pass
+
+
 def lambda_handler(event, context):
     import logging
     logger = logging.getLogger()
@@ -2796,10 +3071,23 @@ def lambda_handler(event, context):
     logger.info(
         f"MCP REQUEST: method={method}, header_keys={list(headers.keys())}, body_preview={str(body_raw)[:200]}")
 
+    # Extract token from query param on ANY request and cache it for the session
+    qsp = event.get("queryStringParameters") or {}
+    qsp_token = qsp.get("token")
+    session_id = headers.get("mcp-session-id") or headers.get("Mcp-Session-Id") or headers.get("MCP-Session-Id")
+
+    if qsp_token and session_id:
+        _cache_session_token(session_id, qsp_token)
+
     if method == "OPTIONS":
         return {"statusCode": 204, "headers": CORS_HEADERS, "body": ""}
 
     if method == "GET":
+        # Cache token from initial GET request (mcp-remote handshake)
+        if qsp_token:
+            # For GET, session_id might not exist yet — cache with a temp key
+            # The initialize POST will have the session_id
+            pass
         return {"statusCode": 405, "headers": CORS_HEADERS, "body": "SSE not supported in Lambda mode"}
 
     if method == "DELETE":
@@ -2815,8 +3103,10 @@ def lambda_handler(event, context):
     rpc_method = body.get("method")
     params = body.get("params", {})
 
-    # initialize
+    # initialize — cache token from query param if present
     if rpc_method == "initialize":
+        if qsp_token and session_id:
+            _cache_session_token(session_id, qsp_token)
         return jsonrpc_response(req_id, {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {"tools": {}},
@@ -2825,6 +3115,9 @@ def lambda_handler(event, context):
 
     # notifications/initialized
     if rpc_method == "notifications/initialized":
+        # This request often has the session_id — cache token if we have it
+        if qsp_token and session_id:
+            _cache_session_token(session_id, qsp_token)
         return {"statusCode": 200, "headers": CORS_HEADERS, "body": ""}
 
     # tools/list
@@ -2841,8 +3134,15 @@ def lambda_handler(event, context):
             return jsonrpc_error(req_id, -32602, f"Unknown tool: {tool_name}")
 
         try:
-            # Extract user from Authorization header
+            # Extract user from Authorization header or query param
             user = extract_user_from_headers(event)
+
+            # Fallback: look up cached session token from DynamoDB
+            if not user and session_id:
+                cached_token = _get_session_token(session_id)
+                if cached_token:
+                    user = verify_token(cached_token, expected_type="access")
+
             if not user:
                 return jsonrpc_response(req_id, {
                     "content": [{"type": "text", "text": json.dumps({
