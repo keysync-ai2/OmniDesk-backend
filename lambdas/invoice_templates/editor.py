@@ -60,11 +60,38 @@ def _handler(event, context):
             except Exception:
                 pass
 
-        # Build HTML editor
+        # Build HTML editor — pass auth token so browser fetch calls can authenticate
         save_endpoint = f"{api_base}/api/invoice-templates"
         logo_endpoint = f"{api_base}/api/invoice-templates/logo"
 
-        html = build_invoice_template_editor(config, logo_url, save_endpoint, logo_endpoint)
+        # Extract JWT token from the request (same token that authenticated this call)
+        headers = event.get("headers") or {}
+        auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+        auth_token = ""
+        if auth_header.startswith("Bearer "):
+            auth_token = auth_header[7:]
+        elif auth_header.startswith("bearer "):
+            auth_token = auth_header[7:]
+        # Fallback: query param
+        if not auth_token:
+            qsp = event.get("queryStringParameters") or {}
+            auth_token = qsp.get("token", "")
+        # Fallback: session cache (same as MCP server does)
+        if not auth_token:
+            session_id = headers.get("mcp-session-id") or headers.get("Mcp-Session-Id") or headers.get("MCP-Session-Id") or ""
+            if session_id:
+                try:
+                    import boto3 as _boto3
+                    ddb = _boto3.resource("dynamodb", region_name="us-east-1")
+                    table = ddb.Table("omnidesk-mcp-sessions")
+                    resp_ddb = table.get_item(Key={"session_id": session_id})
+                    item = resp_ddb.get("Item")
+                    if item:
+                        auth_token = item.get("token", "")
+                except Exception:
+                    pass
+
+        html = build_invoice_template_editor(config, logo_url, save_endpoint, logo_endpoint, auth_token=auth_token)
 
         # Upload to S3
         s3_key = f"invoice-templates/editor-{template_id}.html"

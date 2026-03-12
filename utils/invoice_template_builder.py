@@ -8,7 +8,7 @@ Follows the same pattern as form_builder.py: generate HTML → upload to S3 → 
 import json
 
 
-def build_invoice_template_editor(template_config, logo_url=None, save_endpoint="", logo_endpoint=""):
+def build_invoice_template_editor(template_config, logo_url=None, save_endpoint="", logo_endpoint="", auth_token=""):
     """Build a complete HTML editor page for invoice template customization.
 
     Args:
@@ -16,6 +16,7 @@ def build_invoice_template_editor(template_config, logo_url=None, save_endpoint=
         logo_url: Signed CloudFront URL for current logo (or None)
         save_endpoint: API endpoint to POST template updates
         logo_endpoint: API endpoint to POST logo uploads
+        auth_token: JWT token for authenticating save/upload requests
 
     Returns:
         Complete HTML string
@@ -24,12 +25,14 @@ def build_invoice_template_editor(template_config, logo_url=None, save_endpoint=
     logo_url_json = json.dumps(logo_url or "")
     save_endpoint_json = json.dumps(save_endpoint)
     logo_endpoint_json = json.dumps(logo_endpoint)
+    auth_token_json = json.dumps(auth_token or "")
 
     return EDITOR_HTML_TEMPLATE.format(
         config_json=config_json,
         logo_url_json=logo_url_json,
         save_endpoint_json=save_endpoint_json,
         logo_endpoint_json=logo_endpoint_json,
+        auth_token_json=auth_token_json,
     )
 
 
@@ -153,6 +156,10 @@ const CONFIG = {config_json};
 const LOGO_URL = {logo_url_json};
 const SAVE_ENDPOINT = {save_endpoint_json};
 const LOGO_ENDPOINT = {logo_endpoint_json};
+const AUTH_TOKEN = {auth_token_json};
+const AUTH_HEADERS = AUTH_TOKEN
+  ? {{ 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + AUTH_TOKEN }}
+  : {{ 'Content-Type': 'application/json' }};
 
 let currentConfig = JSON.parse(JSON.stringify(CONFIG));
 let currentLogoUrl = LOGO_URL;
@@ -329,7 +336,7 @@ async function handleLogoUpload(event) {{
       try {{
         const resp = await fetch(LOGO_ENDPOINT, {{
           method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
+          headers: AUTH_HEADERS,
           body: JSON.stringify({{
             data: base64,
             filename: file.name,
@@ -364,7 +371,7 @@ async function saveTemplate() {{
   try {{
     const resp = await fetch(SAVE_ENDPOINT, {{
       method: 'POST',
-      headers: {{ 'Content-Type': 'application/json' }},
+      headers: AUTH_HEADERS,
       body: JSON.stringify({{ config: currentConfig }}),
     }});
     const toast = document.getElementById('save-toast');
